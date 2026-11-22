@@ -175,7 +175,8 @@ def _two_experiments(client, *, first: dict, second: dict) -> tuple[dict, dict]:
         config = register(client, spec["name"], "honest_scripted", **spec.get("extra", {}))
         response = client.post(
             "/experiments",
-            json=experiment_payload(version["id"], [config["id"]], split=spec.get("split", "validation")),
+            json={**experiment_payload(version["id"], [config["id"]], split=spec.get("split", "validation")),
+                  **spec.get("payload", {})},
             headers={"Idempotency-Key": uuid.uuid4().hex},
         )
         assert response.status_code == 201, response.text
@@ -188,6 +189,24 @@ def test_different_splits_are_not_comparable(sm) -> None:
     a, b = _two_experiments(client, first={"name": "a"}, second={"name": "b", "split": "test"})
     response = _compare(client, _side(a), _side(b))
     assert response.status_code == 422 and "split differs" in response.json()["detail"]
+
+
+def test_different_pilot_task_subsets_are_not_comparable(sm) -> None:
+    client = client_for(sm)
+    a, b = _two_experiments(client, first={"name": "a", "payload": {"task_ids": ["order_status_001"]}},
+                            second={"name": "b", "payload": {"task_ids": ["order_status_001", "refund_eligible_001"]}})
+    response = _compare(client, _side(a), _side(b))
+    assert response.status_code == 422
+    assert "task set differs (baseline 1 tasks, candidate 2 tasks, 1 shared)" in response.json()["detail"]
+
+
+def test_different_pilot_task_subsets_are_not_comparable(sm) -> None:
+    client = client_for(sm)
+    a, b = _two_experiments(client, first={"name": "a", "payload": {"task_ids": ["order_status_001"]}},
+                            second={"name": "b", "payload": {"task_ids": ["order_status_001", "refund_eligible_001"]}})
+    response = _compare(client, _side(a), _side(b))
+    assert response.status_code == 422
+    assert "task set differs (baseline 1 tasks, candidate 2 tasks, 1 shared)" in response.json()["detail"]
 
 
 def test_different_limits_are_not_comparable(sm) -> None:

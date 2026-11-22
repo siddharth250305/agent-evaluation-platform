@@ -15,7 +15,7 @@ from sqlalchemy import exists, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.agents.registry import DEFAULT_ADAPTERS, AdapterFactory
-from app.db.models import Job
+from app.db.models import Job, Run
 from app.worker.executor import execute
 from app.worker.queue import Lease, claim_job, sweep_expired_leases
 
@@ -30,6 +30,7 @@ class Worker:
         sm: sessionmaker[Session],
         *,
         worker_id: str | None = None,
+        experiment_id: uuid.UUID | None = None,
         adapters: Mapping[str, AdapterFactory] = DEFAULT_ADAPTERS,
         concurrency: int = DEFAULT_CONCURRENCY,
         lease_seconds: float = 30.0,
@@ -43,6 +44,7 @@ class Worker:
         if not 0 < heartbeat_seconds < lease_seconds:
             raise ValueError("heartbeat_seconds must be positive and shorter than lease_seconds")
         self.sm = sm
+        self.experiment_id = experiment_id
         self.worker_id = worker_id or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:6]}"
         self.adapters = adapters
         self.concurrency = concurrency
@@ -63,14 +65,14 @@ class Worker:
         )
 
     def _sweep(self) -> list:
-        return sweep_expired_leases(self.sm, retry_backoff_seconds=self.retry_backoff_seconds)
+        return sweep_expired_leases(self.sm, retry_backoff_seconds=self.retry_backoff_seconds, experiment_id=self.experiment_id)
 
     def _claim(self) -> Lease | None:
-        return claim_job(self.sm, self.worker_id, lease_seconds=self.lease_seconds)
+        return claim_job(self.sm, self.worker_id, lease_seconds=self.lease_seconds, experiment_id=self.experiment_id)
 
     def process_one(self) -> bool:
         """Sweep, then claim and run one job in this thread. False if there was nothing to claim."""
-        sweep_expired_leases(self.sm, retry_backoff_seconds=self.retry_backoff_seconds)
+        sweep_expired_leases(self.sm, retry_backoff_seconds=self.retry_backoff_seconds, experiment_id=self.experiment_id)
         lease = self._claim()
         if lease is None:
             return False
@@ -87,7 +89,10 @@ class Worker:
 
     def _work_pending(self) -> bool:
         with self.sm() as session:
-            return bool(session.scalar(select(exists().where(Job.status.in_(("queued", "leased"))))))
+            pending = exists().where(Job.status.in_(("queued", "leased")))
+            if self.experiment_id is not None:
+                pending = pending.where(Job.run_id.in_(select(Run.id).where(Run.experiment_id == self.experiment_id)))
+            return bool(session.scalar(select(pending)))
 
     def _loop(self, stop: threading.Event, *, until_idle: bool, timeout: float | None) -> None:
         deadline = time.monotonic() + timeout if timeout is not None else None

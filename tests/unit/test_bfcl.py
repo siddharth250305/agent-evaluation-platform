@@ -242,6 +242,40 @@ def test_fetch_writes_a_pinned_file_only_when_its_hash_matches(tmp_path: Path) -
     assert not (tmp_path / "other").exists()
 
 
+def test_openai_model_runs_need_the_openai_key_and_record_their_wire_api(tmp_path, monkeypatch, capsys) -> None:
+    from app.providers import factory
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-only")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert bfcl.main(["--model", "gpt-4.1-mini", "--limit", "1", "--no-db", "--artifacts-dir", str(tmp_path)]) == 2
+    assert "OPENAI_API_KEY is not set (needed for gpt-4.1-mini)" in capsys.readouterr().err
+
+    observed = {}
+
+    def fake(model, *, effort):
+        observed.update(model=model, effort=effort)
+        return ScriptedProvider([_respond(("calculate_triangle_area", {"base": 10, "height": 5}))], model=model)
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only-never-sent")
+    monkeypatch.setattr(factory, "make_provider", fake)
+    assert bfcl.main(["--model", "gpt-4.1-mini", "--limit", "1", "--no-db", "--artifacts-dir", str(tmp_path)]) == 0
+    assert observed == {"model": "gpt-4.1-mini", "effort": None}  # no reasoning_effort for a non-reasoning model
+    saved = json.loads(next(tmp_path.rglob("manifest.json")).read_text())
+    assert saved["runner"]["settings"]["provider"] == "openai_chat_completions"
+    assert saved["runner"]["settings"]["effort"] is None
+    assert bfcl._from_manifest(next(tmp_path.rglob("manifest.json")))["runner"]["model"] == "gpt-4.1-mini"
+
+
+def test_replay_rejects_a_wire_api_that_does_not_match_the_model(tmp_path) -> None:
+    run = bfcl.run_entries(ENTRIES[:1], ScriptedProvider([_respond(("calculate_triangle_area", {"base": 1}))],
+                                                         model="claude-sonnet-5-5"),
+                           kind="model_run", pin=PIN, settings={"effort": "low", "provider": "openai_chat_completions"})
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(bfcl.manifest(run, raw_path=None, raw_sha256=None)))
+    with pytest.raises(bfcl.BenchmarkDataError, match="unsupported model runner"):
+        bfcl._from_manifest(path)
+
+
 @pytest.mark.parametrize("change", ["duplicate", "reorder", "empty", "scorer", "category", "provider", "count", "hash", "prompt", "tokens", "timeout"])
 def test_replay_rejects_incompatible_or_mislabeled_manifests(tmp_path, change) -> None:
     entries = ENTRIES[:2]
@@ -295,7 +329,7 @@ def test_code_like_model_arguments_are_data_not_executed(tmp_path) -> None:
 
 
 def test_model_manifest_replay_preserves_model_effort_and_request_limits(tmp_path, monkeypatch) -> None:
-    from app.providers import anthropic_http
+    from app.providers import factory
 
     original = bfcl.run_entries(ENTRIES[:1], ScriptedProvider([
         _respond(("calculate_triangle_area", {"base": 10, "height": 5}))
@@ -316,7 +350,7 @@ def test_model_manifest_replay_preserves_model_effort_and_request_limits(tmp_pat
             observed.update(max_output_tokens=request.max_output_tokens, timeout_seconds=timeout_seconds)
             return _respond(("calculate_triangle_area", {"base": 10, "height": 5}))
 
-    monkeypatch.setattr(anthropic_http, "AnthropicMessagesProvider", ReplayProvider)
+    monkeypatch.setattr(factory, "make_provider", lambda model, *, effort: ReplayProvider(model=model, effort=effort))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-only-never-sent")
     assert bfcl.main(["--from-manifest", str(path), "--no-db", "--artifacts-dir", str(tmp_path / "replay")]) == 0
     assert observed == {"model": "claude-sonnet-5-5", "effort": "low", "max_output_tokens": 321, "timeout_seconds": 12.5}

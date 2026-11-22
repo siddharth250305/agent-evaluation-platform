@@ -27,7 +27,6 @@ import copy
 import hashlib
 import json
 import math
-import os
 import re
 import sys
 import time
@@ -44,6 +43,7 @@ from sqlalchemy.orm import Session
 from app.accounting import PriceVersion, UsageLedger, cost_usd, price_for
 from app.db.models import BenchmarkResult
 from app.metrics import Ratio, money
+from app.providers import factory
 from app.providers.base import (
     Message,
     ModelProvider,
@@ -54,6 +54,7 @@ from app.providers.base import (
     ToolSpec,
     Usage,
 )
+from app.providers.factory import WIRE_API, provider_for
 
 ROOT = Path(__file__).resolve().parents[2]
 BFCL_DIR = ROOT / "benchmarks" / "bfcl"
@@ -728,7 +729,8 @@ def _from_manifest(path: Path) -> dict[str, Any]:
         if kind == "scorer_self_check":
             if runner["model"] != SELF_CHECK_MODEL or set(settings) != {"max_output_tokens", "timeout_seconds"}:
                 raise BenchmarkDataError("self-check runner/settings mismatch")
-        elif (runner["model"] == SELF_CHECK_MODEL or settings.get("provider") != "anthropic_messages"
+        elif (runner["model"] == SELF_CHECK_MODEL
+              or settings.get("provider") != WIRE_API.get(_provider_or_none(runner["model"]) or "")
               or set(settings) != {"max_output_tokens", "timeout_seconds", "effort", "provider"}):
             raise BenchmarkDataError("unsupported model runner/settings")
     except (KeyError, TypeError, ValueError) as exc:
@@ -736,12 +738,19 @@ def _from_manifest(path: Path) -> dict[str, Any]:
     return saved
 
 
+def _provider_or_none(model: Any) -> str | None:
+    try:
+        return provider_for(model) if isinstance(model, str) else None
+    except ValueError:
+        return None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.benchmarks.bfcl", description=__doc__.split("\n")[0])
     parser.add_argument("--limit", type=int, default=None, help="first N entries (default: whole category)")
     parser.add_argument("--self-check", action="store_true", help="replay ground truth; no model, no API key")
     parser.add_argument("--model", default="claude-sonnet-5-5")
-    parser.add_argument("--effort", default="medium")
+    parser.add_argument("--effort", default=None, help="default: medium for Claude; none sent for OpenAI")
     parser.add_argument("--max-output-tokens", type=int, default=1024)
     parser.add_argument("--timeout-seconds", type=float, default=60.0)
     parser.add_argument("--from-manifest", type=Path, help="re-run the exact setup recorded in a manifest.json")
@@ -775,14 +784,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         kind: ResultKind = "scorer_self_check"
         price, settings = None, {}
     else:
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            print("ANTHROPIC_API_KEY is not set. Use --self-check for an offline run.", file=sys.stderr)
+        try:
+            missing = factory.missing_api_keys([args.model])
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
             return 2
-        from app.providers.anthropic_http import AnthropicMessagesProvider
-
-        provider = AnthropicMessagesProvider(model=args.model, effort=args.effort)
+        if missing:
+            print(f"{missing[0]} is not set (needed for {args.model}). Use --self-check for an offline run.",
+                  file=sys.stderr)
+            return 2
+        effort = factory.resolve_effort(args.model, args.effort)
+        provider = factory.make_provider(args.model, effort=effort)
         kind = "model_run"
-        price, settings = price_for(args.model), {"effort": args.effort, "provider": "anthropic_messages"}
+        price = price_for(args.model)
+        settings = {"effort": effort, "provider": WIRE_API[provider_for(args.model)]}
 
     label = f"{pin['category']} {len(selected)}/{pin['category_task_count']}"
     print(f"BFCL {pin['release']}@{pin['commit'][:12]} {label} ({kind}, {provider.model})", file=sys.stderr)

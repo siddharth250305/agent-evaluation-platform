@@ -134,6 +134,14 @@ def test_timeout_stops_before_running_tools(runtime, agent_view):
     assert _kinds(runtime, "tool_attempt") == []
 
 
+def test_late_final_response_is_timeout_with_usage_preserved(runtime, agent_view):
+    clock = FakeClock()
+    provider = ScriptedProvider([final_text("late")], on_call=lambda: clock.advance(61))
+    result = ToolLoopAgent(provider, limits=Limits(timeout_seconds=60), clock=clock).run(agent_view, runtime)
+    assert result.stop_reason == "timeout"
+    assert runtime.ledger.summary().model_calls == 1
+
+
 def test_budget_blocks_a_call_it_cannot_afford(runtime, agent_view):
     provider = ScriptedProvider([final_text("never sent")])
     limits = Limits(max_cost_usd=Decimal("0.001"), max_output_tokens=2000)  # output alone reserves $0.002

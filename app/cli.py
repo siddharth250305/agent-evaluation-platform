@@ -15,7 +15,7 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +36,7 @@ SCRIPTED_CONFIGS = (
     {"name": "scripted-lying", "adapter": "lying_broken"},
 )
 MODELS = ("claude-sonnet-5-5", "claude-opus-5-5")
+OPENAI_MODELS = ("gpt-4.1-mini",)  # non-reasoning: no effort setting is sent
 MODEL_LIMITS = {"max_cost_usd": "0.50"}  # per attempt; reserved before every model call
 
 
@@ -49,9 +50,9 @@ def _model_configs() -> list[dict[str, Any]]:
             "model": model,
             "prompt": prompt,
             "limits": MODEL_LIMITS,
-            "settings": {"effort": "medium"},
+            "settings": {"effort": "medium"} if model in MODELS else {},
         }
-        for model in MODELS
+        for model in (*MODELS, *OPENAI_MODELS)
         for version, prompt in PROMPTS.items()
     ]
 
@@ -205,7 +206,8 @@ def seed(_: argparse.Namespace) -> int:
 
 
 def _run_experiment(sm: Any, seeded: dict[str, Any], names: Sequence[str], *, split: str, repetitions: int,
-                    experiment_name: str, concurrency: int, timeout: float) -> uuid.UUID:
+                    experiment_name: str, concurrency: int, timeout: float,
+                    task_ids: Sequence[str] | None = None) -> uuid.UUID:
     from app.services.experiments import ExperimentCreate, create_experiment
     from app.worker.worker import Worker
 
@@ -215,12 +217,13 @@ def _run_experiment(sm: Any, seeded: dict[str, Any], names: Sequence[str], *, sp
         agent_config_ids=[seeded["agent_configs"][n] for n in names],
         split=split,
         repetitions=repetitions,
+        task_ids=list(task_ids) if task_ids is not None else None,
     )
     experiment, _ = create_experiment(sm, payload, idempotency_key=uuid.uuid4().hex)
     planned = len(experiment.manifest["tasks"]) * len(names) * repetitions
     print(f"experiment {experiment.id}: {planned} planned runs ({len(experiment.manifest['tasks'])} {split} tasks "
           f"x {len(names)} configs x {repetitions} repetitions)", file=sys.stderr)
-    Worker(sm, concurrency=concurrency, heartbeat_seconds=2.0, poll_seconds=0.1).run_until_idle(timeout=timeout)
+    Worker(sm, experiment_id=experiment.id, concurrency=concurrency, heartbeat_seconds=2.0, poll_seconds=0.1).run_until_idle(timeout=timeout)
     return experiment.id
 
 
@@ -263,11 +266,137 @@ def demo(args: argparse.Namespace) -> int:
     return 0
 
 
+def _live_queue_workers(worker_ids: Iterable[str], *, host: str, own_pid: int,
+                        command_of: Callable[[int], str]) -> list[int]:
+    """PIDs of ``python -m app.worker`` processes on this host that are still running, from worker ids
+    (``host:pid:suffix``) that have claimed jobs. ``command_of`` returns a PID's command line, "" if gone."""
+    pids = set()
+    for worker_id in worker_ids:
+        worker_host, _, rest = worker_id.rpartition(":")[0].rpartition(":")
+        pid = int(rest) if worker_host == host and rest.isdigit() else None
+        if pid is not None and pid != own_pid and "app.worker" in command_of(pid):
+            pids.add(pid)
+    return sorted(pids)
+
+
+def _process_command(pid: int) -> str:
+    import subprocess
+
+    result = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, check=False)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _background_workers(sm: Any) -> list[int]:
+    """Background workers poll the same queue as `make evaluate`'s own worker and lease its paid jobs with
+    whatever code and API keys they were started with. One started before the gpt-4.1-mini price existed
+    failed 18 of 20 pilot runs ADAPTER_UNAVAILABLE in ~13 ms, twice (6d50a610, c8c1a7af)."""
+    import socket
+
+    from sqlalchemy import select
+
+    from app.db.models import Attempt
+
+    host = socket.gethostname()
+    with sm() as session:
+        ids = session.scalars(select(Attempt.worker_id).distinct().where(Attempt.worker_id.like(f"{host}:%")))
+        return _live_queue_workers(list(ids), host=host, own_pid=os.getpid(), command_of=_process_command)
+
+
+def _split_task_ids(sm: Any, dataset_version_id: str, split: str) -> list[str]:
+    from sqlalchemy import select
+
+    from app.db.models import TaskVersion
+
+    with sm() as session:
+        return list(session.scalars(
+            select(TaskVersion.task_id)
+            .where(TaskVersion.dataset_version_id == dataset_version_id, TaskVersion.split == split)
+            .order_by(TaskVersion.task_id)
+        ))
+
+
+def _select_tasks(in_split: list[str], tasks: Sequence[str] | None, limit: int | None) -> list[str] | None:
+    """Pilot subset: ``--tasks`` (in split order), then the first ``--limit`` of those. None = the whole split."""
+    if tasks is None and limit is None:
+        return None
+    if limit is not None and limit < 1:
+        raise ValueError("--limit must be at least 1")
+    if tasks is not None:
+        unknown = sorted(set(tasks) - set(in_split))
+        if unknown:
+            raise ValueError(f"tasks not in this split: {unknown}")
+        in_split = [t for t in in_split if t in set(tasks)]
+    return in_split[:limit]
+
+
+def _key_status(model: str | None) -> dict[str, Any]:
+    """Which key a model needs and whether it is set; never the key itself."""
+    from app.providers.factory import API_KEY_ENV, provider_for
+
+    if model is None:
+        return {}
+    env = API_KEY_ENV[provider_for(model)]
+    return {"api_key_env": env, "api_key_set": bool(os.environ.get(env))}
+
+
+def _offline_plan(args: argparse.Namespace) -> dict[str, Any]:
+    """Plan solely from versioned files: no DB, sockets, provider or credentials."""
+    from decimal import Decimal
+    from app.accounting import price_for
+    from app.datasets import load_dataset
+    from app.agents.registry import limits_from
+
+    specs = {c["name"]: c for c in (*SCRIPTED_CONFIGS, *_model_configs())}
+    unknown = sorted(set(args.configs) - set(specs))
+    if unknown:
+        raise ValueError(f"unknown configurations: {unknown}")
+    dataset = load_dataset(ROOT / "datasets" / "support")
+    in_split = sorted(t.task_id for t in dataset.split(args.split))
+    selected = _select_tasks(in_split, args.tasks, args.limit)
+    tasks = in_split if selected is None else selected
+    configs = {}
+    for name in args.configs:
+        spec = specs[name]
+        model = spec.get("model")
+        limits = limits_from(spec.get("limits", {}))
+        configs[name] = {
+            "model": model, "max_cost_usd_per_attempt": str(limits.max_cost_usd) if model else "0",
+            "price_version": getattr(price_for(model), "price_version_id", None),
+            "max_model_turns": limits.max_model_turns, "max_tool_calls": limits.max_tool_calls,
+            "timeout_seconds": limits.timeout_seconds, "max_output_tokens": limits.max_output_tokens,
+            **_key_status(model),
+        }
+    per_config = len(tasks) * args.repetitions
+    first = sum(Decimal(c["max_cost_usd_per_attempt"]) for c in configs.values()) * per_config
+    return {
+        "split": args.split, "tasks": tasks, "dataset_content_hash": dataset.content_hash,
+        "planned_runs": per_config * len(configs), "configs": configs,
+        "max_first_attempt_spend_usd": str(first), "max_attempts_per_run": 3,
+        "max_spend_usd": str(first * 3), "other_queued_jobs": "not inspected (offline)",
+    }
+
+
 def evaluate(args: argparse.Namespace) -> int:
     """Real-model experiment (paid). Prompt v1 vs v2 on one model by default: PRD demo 2."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("ANTHROPIC_API_KEY is not set. `make evaluate` calls a paid model; everything else runs without it.",
-              file=sys.stderr)
+    from app.providers.factory import missing_api_keys
+
+    import math
+    if (args.repetitions < 1 or args.concurrency < 1 or not math.isfinite(args.timeout) or args.timeout <= 0
+            or len(set(args.configs)) != len(args.configs)):
+        print("positive limits and unique configurations are required", file=sys.stderr)
+        return 2
+    if args.dry_run:
+        try:
+            _print(_offline_plan(args))
+            return 0
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    models = {c["name"]: c["model"] for c in _model_configs()}
+    missing = missing_api_keys(models[n] for n in args.configs if n in models)
+    if not args.dry_run and missing:
+        print(f"{' and '.join(missing)} not set. `make evaluate` calls a paid model for "
+              f"{', '.join(args.configs)}; everything else runs without it.", file=sys.stderr)
         return 2
     sm = _sm()
     seeded = _seed(sm)
@@ -275,9 +404,23 @@ def evaluate(args: argparse.Namespace) -> int:
     if unknown:
         print(f"unknown configurations {unknown}; known: {sorted(seeded['agent_configs'])}", file=sys.stderr)
         return 2
+    try:
+        in_split = _split_task_ids(sm, seeded["dataset_version_id"], args.split)
+        task_ids = _select_tasks(in_split, args.tasks, args.limit)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    workers = _background_workers(sm)
+    if workers:
+        print(f"background worker process(es) {', '.join(map(str, workers))} are polling the job queue and would "
+              "lease this experiment's paid runs with their own code and API keys (an outdated one fails them "
+              "ADAPTER_UNAVAILABLE). Stop them first, e.g. `kill "
+              f"{' '.join(map(str, workers))}`; `make evaluate` runs its own worker.", file=sys.stderr)
+        return 2
+    subset = f" [{len(task_ids)} {args.split} tasks]" if task_ids is not None else ""
     experiment_id = _run_experiment(sm, seeded, args.configs, split=args.split, repetitions=args.repetitions,
-                                    experiment_name=f"evaluate: {' vs '.join(args.configs)}",
-                                    concurrency=args.concurrency, timeout=args.timeout)
+                                    experiment_name=f"evaluate: {' vs '.join(args.configs)}{subset}",
+                                    concurrency=args.concurrency, timeout=args.timeout, task_ids=task_ids)
     _print(_summary(sm, experiment_id))
     return 0
 
@@ -319,12 +462,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--bfcl-limit", type=int, default=50)
     p.set_defaults(func=demo)
 
-    p = sub.add_parser("evaluate", help="real-model experiment (needs ANTHROPIC_API_KEY; costs money)")
+    p = sub.add_parser("evaluate", help="real-model experiment (needs ANTHROPIC_API_KEY or OPENAI_API_KEY for the "
+                                        "selected configs; costs money)")
     p.add_argument("--configs", nargs="+", default=["sonnet-5-5_prompt-v1", "sonnet-5-5_prompt-v2"])
     p.add_argument("--split", default="dev", choices=("dev", "validation", "test"))
     p.add_argument("--repetitions", type=int, default=1)
     p.add_argument("--concurrency", type=int, default=2)
     p.add_argument("--timeout", type=float, default=3600.0)
+    p.add_argument("--tasks", nargs="+", default=None, metavar="TASK_ID",
+                   help="pilot subset: only these task ids from the split")
+    p.add_argument("--limit", type=int, default=None,
+                   help="pilot subset: the first N tasks of the split (or of --tasks), in task-id order")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print tasks, runs and retry-inclusive spend ceiling offline; no key, database or network")
     p.set_defaults(func=evaluate)
 
     p = sub.add_parser("report", help="export an experiment (latest by default) to reports/ as JSON and CSV")

@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.accounting import PRICE_VERSIONS
+from app.accounting import price_for
 from app.db.models import (
     AgentConfig,
     Attempt,
@@ -48,6 +48,10 @@ class ExperimentCreate(BaseModel):
     agent_config_ids: list[uuid.UUID] = Field(min_length=1, max_length=20)
     split: Literal["dev", "validation", "test"]
     repetitions: int = Field(default=1, ge=1, le=10)
+    task_ids: list[str] | None = Field(
+        default=None, min_length=1, max_length=500,
+        description="Run only these task ids from the split (a pilot subset); omit for the whole split",
+    )
 
     @field_validator("agent_config_ids")
     @classmethod
@@ -56,9 +60,20 @@ class ExperimentCreate(BaseModel):
             raise ValueError("agent_config_ids must be unique")
         return ids
 
+    @field_validator("task_ids")
+    @classmethod
+    def _unique_tasks(cls, ids: list[str] | None) -> list[str] | None:
+        if ids is not None and len(set(ids)) != len(ids):
+            raise ValueError("task_ids must be unique")
+        return ids
+
     def request_hash(self) -> str:
         body = self.model_dump(mode="json")
         body["agent_config_ids"] = sorted(body["agent_config_ids"])  # the plan, not the listing order
+        if body["task_ids"] is None:
+            del body["task_ids"]  # whole-split requests hash exactly as they did before subsets existed
+        else:
+            body["task_ids"] = sorted(body["task_ids"])
         return sha256_json(body)
 
 
@@ -115,6 +130,13 @@ def _plan(session: Session, payload: ExperimentCreate, key: str, request_hash: s
     ).all()
     if not tasks:
         raise InvalidRequest(f"split {payload.split!r} has no tasks in this dataset version")
+    split_task_count = len(tasks)
+    if payload.task_ids is not None:
+        wanted = set(payload.task_ids)
+        unknown = sorted(wanted - {t.task_id for t in tasks})
+        if unknown:
+            raise InvalidRequest(f"tasks not in split {payload.split!r} of this dataset version: {unknown}")
+        tasks = [t for t in tasks if t.task_id in wanted]
     dataset = session.get(Dataset, version.dataset_id)
 
     experiment = Experiment(
@@ -126,7 +148,7 @@ def _plan(session: Session, payload: ExperimentCreate, key: str, request_hash: s
         status="queued",
         idempotency_key=key,
         request_hash=request_hash,
-        manifest=_manifest(dataset, version, payload, tasks, configs),
+        manifest=_manifest(dataset, version, payload, tasks, configs, split_task_count),
     )
     session.add(experiment)
     session.flush()  # a duplicate key surfaces here, before any runs are written
@@ -162,9 +184,11 @@ def _manifest(
     payload: ExperimentCreate,
     tasks: list[TaskVersion],
     configs: list[AgentConfig],
+    split_task_count: int,
 ) -> dict[str, Any]:
     """Everything needed to reproduce the experiment, frozen at creation."""
-    models = {c.model for c in configs if c.model}
+    models = sorted({c.model for c in configs if c.model})
+    prices = [p for p in (price_for(m) for m in models) if p is not None]
     return {
         "schema_version": 1,
         "dataset": {
@@ -178,6 +202,12 @@ def _manifest(
         "tasks": [
             {"task_version_id": str(t.id), "task_id": t.task_id, "content_hash": t.content_hash} for t in tasks
         ],
+        "task_selection": {
+            "method": "whole_split" if payload.task_ids is None else "explicit_task_ids",
+            "selected": len(tasks),
+            "split_task_count": split_task_count,
+            "is_subset": len(tasks) < split_task_count,
+        },
         "agent_configs": [
             {
                 "id": str(c.id),
@@ -196,9 +226,7 @@ def _manifest(
         "evaluators": [{"name": e.name, "version": e.version} for e in DEFAULT_EVALUATORS],
         "environment": {"name": "support_environment", "version": ENVIRONMENT_VERSION},
         "fault_config": fault_config(tasks),
-        "price_versions": [
-            {"price_version_id": p.price_version_id, "model": p.model} for p in PRICE_VERSIONS if p.model in models
-        ],
+        "price_versions": [{"price_version_id": p.price_version_id, "model": p.model} for p in prices],
         "code": _code_identity(),
     }
 

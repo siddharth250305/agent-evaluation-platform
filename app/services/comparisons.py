@@ -85,7 +85,16 @@ def incompatibilities(baseline: _Side, candidate: _Side) -> list[str]:
         ("evaluator versions", b.evaluators, c.evaluators),
         ("limits", b.config.get("limits"), c.config.get("limits")),
     )
-    return [f"{name} differs (baseline {bv!r}, candidate {cv!r})" for name, bv, cv in checks if bv != cv]
+    problems = [f"{name} differs (baseline {bv!r}, candidate {cv!r})" for name, bv, cv in checks if bv != cv]
+    b_tasks, c_tasks = _task_ids(b), _task_ids(c)
+    if b_tasks != c_tasks:  # pilot subsets of one split are different benchmarks
+        problems.append(f"task set differs (baseline {len(b_tasks)} tasks, candidate {len(c_tasks)} tasks, "
+                        f"{len(b_tasks & c_tasks)} shared)")
+    return problems
+
+
+def _task_ids(side: _Side) -> frozenset[str]:
+    return frozenset(t["task_id"] for t in side.experiment.manifest.get("tasks", []))
 
 
 def _side_out(side: _Side, runs: list[RunFacts]) -> dict[str, Any]:

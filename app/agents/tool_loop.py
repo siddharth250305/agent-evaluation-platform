@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -31,9 +32,12 @@ class Limits:
     max_output_tokens: int = 16_000
 
     def __post_init__(self) -> None:
+        if (any(type(v) is not int for v in (self.max_model_turns, self.max_tool_calls, self.max_output_tokens))
+                or self.max_output_tokens < 1 or not math.isfinite(self.timeout_seconds)):
+            raise ValueError("limits must be finite with integer turn/token counts")
         if self.max_model_turns < 1 or self.max_tool_calls < 0 or self.timeout_seconds <= 0:
             raise ValueError("limits must be positive")
-        if self.max_cost_usd is not None and self.max_cost_usd <= 0:
+        if self.max_cost_usd is not None and (not self.max_cost_usd.is_finite() or self.max_cost_usd <= 0):
             raise ValueError("max_cost_usd must be positive")
 
 
@@ -47,6 +51,8 @@ class ToolLoopAgent:
         price: PriceVersion | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        if provider.model == "gpt-4.1-mini" and limits.max_output_tokens > 32_768:
+            raise ValueError("gpt-4.1-mini supports at most 32768 output tokens")
         self.provider = provider
         self.name = f"tool_loop:{provider.name}:{provider.model}"
         self.system_prompt = system_prompt
@@ -165,6 +171,8 @@ class ToolLoopAgent:
 
             if budget.exceeded:
                 return finish("budget_exceeded", committed_usd=str(budget.committed_usd))
+            if clock() >= deadline:
+                return finish("timeout")
             # Never run tools from a refused or truncated turn: the arguments may be incomplete.
             if response.stop_reason == "refusal":
                 return finish("refused")

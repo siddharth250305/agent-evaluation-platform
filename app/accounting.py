@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -35,6 +34,19 @@ PRICE_VERSIONS: tuple[PriceVersion, ...] = (
     PriceVersion(
         "anthropic-2026-10-06", date(2026, 10, 6), "claude-sonnet-5-5",
         Decimal("2.00"), Decimal("10.00"), Decimal("0.20"), Decimal("2.50"),
+    ),
+    # Re-checked against the published pricing page on 2026-11-22: Sonnet 5.5 cache hits are
+    # 0.05x input ($0.10), not $0.20. Opus 5.5 is unchanged. Past rows stay as recorded.
+    PriceVersion(
+        "anthropic-2026-11-22", date(2026, 11, 22), "claude-sonnet-5-5",
+        Decimal("2.00"), Decimal("10.00"), Decimal("0.10"), Decimal("2.50"),
+    ),
+    # OpenAI Standard-tier list prices, read from the published pricing page on 2026-11-22.
+    # OpenAI bills no cache writes (the adapter always reports 0 of them), so that rate is None.
+    # gpt-4.1-mini is marked deprecated by OpenAI (no shutdown date announced at that time).
+    PriceVersion(
+        "openai-2026-11-22", date(2026, 11, 22), "gpt-4.1-mini",
+        Decimal("0.40"), Decimal("1.60"), Decimal("0.10"), None,
     ),
 )
 
@@ -132,8 +144,14 @@ class Budget:
     def reserve(self, request: ModelRequest) -> Decimal:
         if self.max_cost_usd is None or self._price is None:
             return Decimal("0")
-        # Rough upper bound: ~3 chars per token, priced at the dearest input rate.
-        estimated_input = math.ceil(len(request.model_dump_json()) / 3)
+        # Byte-level tokenizers cannot emit more tokens than input bytes. Include
+        # serialized tools/history plus generous message/schema framing overhead;
+        # chars/3 is an average, not a safety bound (especially for Unicode/code).
+        estimated_input = len(request.model_dump_json().encode("utf-8")) + 4096
+        if self._price.model == "gpt-4.1-mini":
+            # For the paid pilot reserve the entire documented context, not a
+            # tokenizer estimate. Settling known usage releases the unused bound.
+            estimated_input = 1_047_576
         input_rate = max(self._price.input_per_mtok, self._price.cache_write_per_mtok or Decimal("0"))
         return (
             Decimal(estimated_input) * input_rate

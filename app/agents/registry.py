@@ -15,7 +15,7 @@ from typing import Any
 from app.agents.base import AgentAdapter
 from app.agents.scripted import HonestScriptedAgent, LyingBrokenAgent
 from app.agents.tool_loop import DEFAULT_SYSTEM_PROMPT, Limits, ToolLoopAgent
-from app.providers.anthropic_http import AnthropicMessagesProvider
+from app.providers.factory import make_provider
 
 # Adapters that call a model and therefore need one named in the configuration.
 MODEL_ADAPTERS = frozenset({"tool_loop"})
@@ -57,7 +57,8 @@ def limits_from(raw: Mapping[str, Any]) -> Limits:
 def _tool_loop(spec: AgentConfigSpec) -> AgentAdapter:
     if not spec.model:
         raise ValueError("the tool_loop adapter needs a model")
-    provider = AnthropicMessagesProvider(model=spec.model, effort=spec.settings.get("effort", "medium"))
+    # The model name picks the vendor adapter; its key comes from the worker's environment.
+    provider = make_provider(spec.model, effort=spec.settings.get("effort"))
     return ToolLoopAgent(provider, system_prompt=spec.prompt or DEFAULT_SYSTEM_PROMPT, limits=limits_from(spec.limits))
 
 

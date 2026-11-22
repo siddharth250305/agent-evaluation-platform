@@ -10,6 +10,7 @@ from app.providers.base import (
     Usage,
 )
 from app.providers.fake import ScriptedProvider
+from app.providers.openai_http import OpenAIChatProvider
 
 __all__ = [
     "AnthropicMessagesProvider",
@@ -17,6 +18,7 @@ __all__ = [
     "ModelProvider",
     "ModelRequest",
     "ModelResponse",
+    "OpenAIChatProvider",
     "ProviderError",
     "ScriptedProvider",
     "ToolCall",

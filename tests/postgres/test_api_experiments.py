@@ -188,6 +188,41 @@ def test_runs_are_paginated_and_filterable(sm: sessionmaker[Session]) -> None:
     assert client.get(f"/experiments/{experiment['id']}/runs", params={"limit": 0}).status_code == 422
 
 
+def test_task_ids_plan_only_that_pilot_subset_and_label_it(sm: sessionmaker[Session], setup) -> None:
+    client, version, config_ids = setup
+    payload = {**experiment_payload(version["id"], config_ids), "task_ids": ["refund_eligible_001", "order_status_001"]}
+
+    body = client.post("/experiments", json=payload, headers={"Idempotency-Key": "k-sub"}).json()
+
+    assert body["progress"]["planned_runs"] == 2 * 2
+    assert [t["task_id"] for t in body["manifest"]["tasks"]] == ["order_status_001", "refund_eligible_001"]
+    assert body["manifest"]["task_selection"] == {
+        "method": "explicit_task_ids", "selected": 2,
+        "split_task_count": version["split_counts"]["validation"], "is_subset": True,
+    }
+
+
+def test_task_ids_outside_the_split_are_rejected_before_anything_is_planned(sm: sessionmaker[Session], setup) -> None:
+    client, version, config_ids = setup
+    payload = {**experiment_payload(version["id"], config_ids), "task_ids": ["order_status_001", "approval_expired_001"]}
+
+    response = client.post("/experiments", json=payload, headers={"Idempotency-Key": "k-bad"})
+
+    assert response.status_code == 422 and "approval_expired_001" in response.json()["detail"]
+    assert _count(sm, Experiment) == 0 and _count(sm, Run) == 0
+
+
+def test_whole_split_request_hash_is_unchanged_by_the_subset_field() -> None:
+    from app.services.hashing import sha256_json
+
+    payload = ExperimentCreate(dataset_version_id=uuid.uuid4(), agent_config_ids=[uuid.uuid4()], split="dev")
+    legacy = payload.model_dump(mode="json", exclude={"task_ids"})
+    legacy["agent_config_ids"] = sorted(legacy["agent_config_ids"])
+    assert payload.request_hash() == sha256_json(legacy)  # old idempotency keys still replay
+    subset = payload.model_copy(update={"task_ids": ["b", "a"]}).request_hash()
+    assert subset == payload.model_copy(update={"task_ids": ["a", "b"]}).request_hash() != payload.request_hash()
+
+
 def test_cancel_stops_queued_runs(sm: sessionmaker[Session]) -> None:
     client = client_for(sm)
     experiment = launch(client, [("honest", "honest_scripted")])

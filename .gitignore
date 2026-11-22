@@ -8,9 +8,29 @@ __pycache__/
 htmlcov/
 .DS_Store
 
+# Local secrets: API keys live in the environment or an untracked .env, never in the repo
 .env
+.env.*
+!.env.example
+.envrc
+*.pem
+*.key
+secrets/
+.secrets/
+
+# Run outputs (live-run transcripts and reports can contain model output and cost data)
 artifacts/
 reports/
+
+# Temporary and tool caches
+tmp/
+.tmp/
+*.tmp
+*.log
+*.swp
+*~
+.mypy_cache/
+.ruff_cache/
 
 # Explicitly excluded docs per project instructions
 PRD AI Agent Evaluation Platform.md

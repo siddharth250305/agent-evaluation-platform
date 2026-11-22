@@ -54,6 +54,26 @@ def test_price_lookup_is_dated():
     assert price_for("scripted-model") is None
 
 
+def test_corrected_sonnet_cache_read_rate_applies_from_its_effective_date_only() -> None:
+    before = price_for("claude-sonnet-5-5", on=date(2026, 11, 21))
+    after = price_for("claude-sonnet-5-5", on=date(2026, 11, 22))
+    assert (before.price_version_id, before.cache_read_per_mtok) == ("anthropic-2026-10-06", Decimal("0.20"))
+    assert (after.price_version_id, after.cache_read_per_mtok) == ("anthropic-2026-11-22", Decimal("0.10"))
+    assert price_for("claude-opus-5-5", on=date(2026, 11, 22)).price_version_id == "anthropic-2026-10-06"
+    usage = Usage(input_tokens=1000, output_tokens=200, cache_read_input_tokens=0, cache_creation_input_tokens=0)
+    assert cost_usd(usage, after) == Decimal("0.004")  # 1000 x $2/M + 200 x $10/M: a real number, not unknown
+
+
+def test_openai_price_version_prices_cached_input_and_reports_no_cache_writes() -> None:
+    price = price_for("gpt-4.1-mini", on=date(2026, 11, 22))
+    assert (price.price_version_id, price.input_per_mtok, price.output_per_mtok, price.cache_read_per_mtok) == (
+        "openai-2026-11-22", Decimal("0.40"), Decimal("1.60"), Decimal("0.10"))
+    assert price.cache_write_per_mtok is None  # OpenAI bills no cache writes; the adapter reports 0 of them
+    usage = Usage(input_tokens=800, output_tokens=100, cache_read_input_tokens=200, cache_creation_input_tokens=0)
+    assert cost_usd(usage, price) == Decimal("0.0005")  # (800x0.40 + 200x0.10 + 100x1.60) / 1M
+    assert price_for("gpt-4.1-mini", on=date(2026, 11, 21)) is None
+
+
 def test_ledger_totals_when_every_call_is_known():
     ledger = UsageLedger()
     ledger.record("m", FULL, Decimal("6"), "test-v1")

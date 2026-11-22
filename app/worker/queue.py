@@ -20,11 +20,12 @@ from decimal import Decimal
 from typing import Any
 
 from pydantic_core import to_jsonable_python
-from sqlalchemy import func, select, update
+from sqlalchemy import ColumnElement, column, exists, func, select, update
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import Attempt, Experiment, Job, ModelCall, Run, Score, TaskVersion, ToolCall, TraceEvent
-from app.accounting import UsageSummary
+from app.accounting import PRICE_VERSIONS, UsageSummary
 from app.runner import AttemptResult
 from app.services.catalog import price_version_pk
 
@@ -83,15 +84,34 @@ def _text(value: str | None, limit: int | None = None) -> str | None:
 
 # --- claiming ------------------------------------------------------------------------
 
+# Price versions are code, not data: a worker started before a new row was added cannot price
+# (and so cannot budget) that model. It must leave such jobs to an up-to-date worker instead of
+# failing them, or silently pricing them with an older version than the manifest pinned.
+KNOWN_PRICE_VERSION_IDS: frozenset[str] = frozenset(p.price_version_id for p in PRICE_VERSIONS)
 
-def claim_job(sm: sessionmaker[Session], worker_id: str, *, lease_seconds: float) -> Lease | None:
-    """Lease the oldest available job, skipping rows other workers hold. None if nothing is available."""
+
+def _priced_here(known: frozenset[str]) -> ColumnElement[bool]:
+    """True when every price version pinned in the experiment's manifest is one this worker has."""
+    pinned = (
+        func.jsonb_array_elements(func.coalesce(Experiment.manifest["price_versions"], func.jsonb_build_array()))
+        .table_valued(column("value", JSONB))
+        .render_derived(name="pinned")
+    )
+    return ~exists().select_from(pinned).where(pinned.c.value["price_version_id"].astext.not_in(sorted(known)))
+
+
+
+def claim_job(sm: sessionmaker[Session], worker_id: str, *, lease_seconds: float, experiment_id: uuid.UUID | None = None) -> Lease | None:
+    """Lease the oldest available job, skipping rows other workers hold and experiments this worker
+    cannot price. None if nothing is available."""
     with sm.begin() as session:
         row = session.execute(
             select(Job, Run)
             .join(Run, Run.id == Job.run_id)
             .join(Experiment, Experiment.id == Run.experiment_id)
             .where(Job.status == "queued", Job.available_at <= func.now(), Experiment.cancel_requested_at.is_(None))
+            .where(Run.experiment_id == experiment_id if experiment_id is not None else True)
+            .where(_priced_here(KNOWN_PRICE_VERSION_IDS))
             .order_by(Job.available_at, Job.id)
             .limit(1)
             .with_for_update(of=Job, skip_locked=True)
@@ -252,7 +272,7 @@ def fail_attempt(
         _settle_experiment(session, experiment)
 
 
-def sweep_expired_leases(sm: sessionmaker[Session], *, retry_backoff_seconds: float = 0.0) -> list[uuid.UUID]:
+def sweep_expired_leases(sm: sessionmaker[Session], *, retry_backoff_seconds: float = 0.0, experiment_id: uuid.UUID | None = None) -> list[uuid.UUID]:
     """Mark attempts whose worker stopped heartbeating as interrupted and hand their runs on.
 
     One job per transaction, so two sweepers never lock experiments in different orders.
@@ -263,6 +283,8 @@ def sweep_expired_leases(sm: sessionmaker[Session], *, retry_backoff_seconds: fl
             job = session.scalar(
                 select(Job)
                 .where(Job.status == "leased", Job.lease_expires_at < func.now())
+                .where(Job.run_id.in_(select(Run.id).where(Run.experiment_id == experiment_id))
+                       if experiment_id is not None else True)
                 .order_by(Job.lease_expires_at)
                 .limit(1)
                 .with_for_update(skip_locked=True)

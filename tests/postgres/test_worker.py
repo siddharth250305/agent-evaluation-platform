@@ -23,7 +23,7 @@ from app.tasks import AgentTaskView
 from app.worker.executor import execute
 from app.worker.queue import claim_job, heartbeat, sweep_expired_leases
 from app.worker.worker import DEFAULT_CONCURRENCY
-from tests.postgres.helpers import PROBE, TEST_ADAPTERS, client_for, launch, worker
+from tests.postgres.helpers import PROBE, TEST_ADAPTERS, client_for, import_support, launch, register, worker
 
 
 def _runs(sm: sessionmaker[Session]) -> list[Run]:
@@ -401,3 +401,45 @@ def test_a_worker_that_loses_its_lease_stops_and_writes_nothing(sm: sessionmaker
 def test_worker_rejects_nonpositive_concurrency(sm: sessionmaker[Session], bad: int) -> None:
     with pytest.raises(ValueError):
         worker(sm, concurrency=bad)
+
+
+def test_openai_transient_errors_get_new_attempts_and_the_key_is_never_stored(sm: sessionmaker[Session]) -> None:
+    """The real OpenAI adapter over a mock transport: 429, then 503, then a clean attempt. No network."""
+    import json
+
+    import httpx
+
+    from app.providers.openai_http import OpenAIChatProvider
+
+    key = "sk-test-NEVER-STORED-42"
+    replies = iter([
+        httpx.Response(429, json={"error": {"message": f"Rate limit reached for key {key}", "code": "rate_limit_exceeded"}}),
+        httpx.Response(503, json={"error": {"message": "overloaded"}}),
+        httpx.Response(200, json={"id": "c1", "model": "gpt-4.1-mini", "choices": [{"finish_reason": "stop", "message": {
+            "role": "assistant", "content": "I could not find that order."}}],
+            "usage": {"prompt_tokens": 300, "completion_tokens": 20, "prompt_tokens_details": {"cached_tokens": 0}}}),
+    ])
+    client = httpx.Client(transport=httpx.MockTransport(lambda request: next(replies)))
+    adapters = {**TEST_ADAPTERS, "openai_mock": lambda spec: ToolLoopAgent(
+        OpenAIChatProvider(model="gpt-4.1-mini", api_key=key, client=client))}
+    http = client_for(sm, adapters)
+    version, config = import_support(http), register(http, "gpt", "openai_mock")
+    response = http.post("/experiments", headers={"Idempotency-Key": uuid.uuid4().hex}, json={
+        "dataset_version_id": version["id"], "agent_config_ids": [config["id"]], "split": "validation",
+        "task_ids": ["order_status_001"]})
+    assert response.status_code == 201, response.text
+
+    worker(sm, adapters, retry_backoff_seconds=0).run_until_idle()
+
+    [run] = _runs(sm)
+    attempts = _attempts(sm, run.id)
+    assert [a.status for a in attempts][:2] == ["infrastructure_error"] * 2 and len(attempts) == 3
+    assert attempts[2].status == "completed" and run.status == "completed"
+    assert len({a.environment_id for a in attempts}) == 3  # every retry gets a fresh environment
+    assert all(a.cost_usd is None for a in attempts[:2])  # failed calls: unknown, never free
+    assert attempts[2].cost_usd is not None
+    with sm() as session:
+        stored = json.dumps([
+            [a.error_code, a.error, a.agent_metadata, a.final_response] for a in session.scalars(select(Attempt))
+        ] + [e.payload for e in session.scalars(select(TraceEvent))], default=str)
+    assert "HTTP 429: rate limited" in stored and key not in stored and "sk-test" not in stored

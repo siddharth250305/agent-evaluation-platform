@@ -120,3 +120,13 @@ def test_extraneous_tool_call_invalidates_judge_output_but_keeps_usage() -> None
     verdict = judge.judge(ITEM)
     assert verdict.status == "evaluation_error" and verdict.scores is None
     assert verdict.usage.input_tokens == 50 and verdict.cost_usd > 0
+
+
+def test_judge_command_asks_for_the_key_of_the_judge_models_vendor(monkeypatch, capsys) -> None:
+    from app.judges.__main__ import main
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-only")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    # Refused before any database or model access.
+    assert main(["--experiment", "00000000-0000-0000-0000-000000000000", "--model", "gpt-4.1-mini"]) == 2
+    assert "OPENAI_API_KEY is not set (needed for gpt-4.1-mini)" in capsys.readouterr().err
