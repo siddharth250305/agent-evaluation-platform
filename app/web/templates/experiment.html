@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+{% block title %}{{ experiment.name or experiment.id|string|short }}{% endblock %}
+{% block content %}
+{% set m = experiment.manifest %}
+<p class="note"><a href="/ui/experiments">Experiments</a> /</p>
+<h1>{{ experiment.name or "Experiment" }} <span class="pill {{ experiment.status }}">{{ experiment.status }}</span></h1>
+<div class="meta">
+  <span class="mono">{{ experiment.id }}</span>
+  <span>dataset {{ m.dataset.name }} <span class="mono">{{ m.dataset.content_hash|short(12) }}</span></span>
+  <span>split {{ experiment.split }}</span>
+  <span>×{{ experiment.repetitions }} repetitions</span>
+  <span>env {{ m.environment.version }}</span>
+  <span>created {{ experiment.created_at|when }}</span>
+  {% if experiment.completed_at %}<span>completed {{ experiment.completed_at|when }}</span>{% endif %}
+</div>
+<div class="actions">
+  <a class="button" href="/experiments/{{ experiment.id }}/export?format=csv">Export CSV</a>
+  <a class="button" href="/experiments/{{ experiment.id }}/export?format=json">Export JSON</a>
+  {% for c in configs[1:] %}
+    <a class="button" href="/ui/compare?baseline={{ experiment.id }}:{{ configs[0].id }}&amp;candidate={{ experiment.id }}:{{ c.id }}">Compare {{ configs[0].name }} → {{ c.name }}</a>
+  {% endfor %}
+</div>
+
+<h2>Scorecard</h2>
+<p class="note">Each rate shows numerator/denominator. No blended score: success, safety, latency and cost are read separately.</p>
+<div class="table-wrap">
+  <table id="scorecard">
+    <thead><tr><th>Metric</th>{% for p in per_config %}<th class="num">{{ p.config.name }}{% if p.config.model %}<br><span class="note">{{ p.config.model }}</span>{% endif %}</th>{% endfor %}</tr></thead>
+    <tbody>
+      <tr><td>Planned runs (finished)</td>{% for p in per_config %}<td class="num">{{ p.scorecard.planned_runs }} ({{ p.scorecard.finished_runs }})</td>{% endfor %}</tr>
+      <tr><td>Verified success (successful / scored)</td>{% for p in per_config %}<td class="num">{{ p.scorecard.verified_success_rate|pct }}</td>{% endfor %}</tr>
+      <tr><td>Strict end-to-end success (successful / planned)</td>{% for p in per_config %}<td class="num">{{ p.scorecard.strict_success_rate|pct }}</td>{% endfor %}</tr>
+      <tr><td>Evaluation coverage (scored / planned)</td>{% for p in per_config %}<td class="num">{{ p.scorecard.evaluation_coverage|pct }}</td>{% endfor %}</tr>
+      <tr><td>Evaluation errors</td>{% for p in per_config %}<td class="num">{{ p.scorecard.evaluation_errors }}</td>{% endfor %}</tr>
+      <tr><td>Passed all repetitions (tasks)</td>{% for p in per_config %}<td class="num">{{ p.scorecard.passed_all_repetitions|pct }}</td>{% endfor %}</tr>
+      <tr><td>Unsafe attempt rate (policy-scored runs)</td>{% for p in per_config %}<td class="num {% if p.scorecard.unsafe_attempt_rate.numerator %}bad{% endif %}">{{ p.scorecard.unsafe_attempt_rate|pct }}</td>{% endfor %}</tr>
+      <tr><td>Executed violation rate (policy-scored runs)</td>{% for p in per_config %}<td class="num {% if p.scorecard.executed_violation_rate.numerator %}bad{% endif %}">{{ p.scorecard.executed_violation_rate|pct }}</td>{% endfor %}</tr>
+      {% for name, label in [("tool_schema_validity", "Tool schema validity (valid / decided calls)"),
+                             ("tool_call_precision", "Tool-call precision (matched / attempted calls)"),
+                             ("required_call_recall", "Required-call recall (satisfied / required calls)")] %}
+      <tr><td>{{ label }}</td>{% for p in per_config %}{% set t = p.scorecard.tool_metrics[name] %}<td class="num">{{ t|tool_rate }}<br><span class="note">{{ t|tool_runs }}</span></td>{% endfor %}</tr>
+      {% endfor %}
+      <tr><td>Queue latency median / p95</td>{% for p in per_config %}{% set l = p.scorecard.latency_ms.queue %}<td class="num">{{ l.median|ms }} / {{ l.p95|ms }}<br><span class="note">n={{ l.n }}{% if l.unknown %}, {{ l.unknown }} unknown{% endif %}</span></td>{% endfor %}</tr>
+      <tr><td>Execution latency median / p95</td>{% for p in per_config %}{% set l = p.scorecard.latency_ms.execution %}<td class="num">{{ l.median|ms }} / {{ l.p95|ms }}<br><span class="note">n={{ l.n }}{% if l.unknown %}, {{ l.unknown }} unknown{% endif %}</span></td>{% endfor %}</tr>
+      <tr><td>Attempts (infrastructure retries)</td>{% for p in per_config %}<td class="num">{{ p.scorecard.usage.attempts }} ({{ p.scorecard.usage.retry_attempts }})</td>{% endfor %}</tr>
+      <tr><td>Cost, retries included</td>{% for p in per_config %}<td class="num">{{ p.scorecard.usage.cost_usd|usd }}{% if p.scorecard.usage.attempts_with_unknown_cost %}<br><span class="note">{{ p.scorecard.usage.attempts_with_unknown_cost }} attempts with unknown usage</span>{% endif %}</td>{% endfor %}</tr>
+      <tr><td>Cost per successful run</td>{% for p in per_config %}{% set c = p.scorecard.usage.cost_per_successful_run_usd %}<td class="num">{{ c.value|usd if c.denominator else "n/a" }}<br><span class="note">÷ {{ c.denominator }} successful</span></td>{% endfor %}</tr>
+      <tr><td>Tokens in / out</td>{% for p in per_config %}<td class="num">{{ p.scorecard.usage.input_tokens if p.scorecard.usage.input_tokens is not none else "unknown" }} / {{ p.scorecard.usage.output_tokens if p.scorecard.usage.output_tokens is not none else "unknown" }}</td>{% endfor %}</tr>
+    </tbody>
+  </table>
+</div>
+
+{% if judges %}
+<h2>Communication quality <span class="note">optional LLM judge · secondary · uncalibrated</span></h2>
+<div class="callout" id="judge-notice">A model's 1-5 opinion of clarity, completeness and tone. It does <strong>not</strong> affect
+  run success, evaluation status, the scorecard above or comparisons, and it has not been calibrated against human labels.
+  Its tokens and cost are the judge's own and are <strong>not</strong> included in the candidate's cost above.</div>
+<div class="table-wrap">
+  <table id="judge">
+    <thead><tr><th>Configuration</th><th>Judge</th><th class="num">Judged (coverage)</th><th class="num">Errors</th>
+      {% for d in ("clarity", "completeness", "tone") %}<th class="num">{{ d|capitalize }} mean (median)</th>{% endfor %}
+      <th class="num">Judge cost</th><th class="num">Judge tokens in / out</th></tr></thead>
+    <tbody>
+    {% for j in judges %}
+      <tr>
+        <td>{{ j.agent_config_name }}</td>
+        <td class="mono">{{ j.judge }}<br><span class="note">{{ j.models|join(", ") }}</span></td>
+        <td class="num">{{ j.judged }} ({{ j.coverage|pct }})</td>
+        <td class="num {% if j.evaluation_errors %}bad{% endif %}">{{ j.evaluation_errors }}{% for code, n in j.error_reasons.items() %}<br><span class="note mono">{{ code }}: {{ n }}</span>{% endfor %}</td>
+        {% for d in ("clarity", "completeness", "tone") %}{% set dist = j.dimensions[d] %}
+          <td class="num">{{ "%.2f"|format(dist.mean) if dist.mean is not none else "n/a" }} ({{ dist.median if dist.median is not none else "n/a" }})<br><span class="note">n={{ dist.n }}</span></td>
+        {% endfor %}
+        <td class="num">{{ j.usage.cost_usd|usd }}{% if j.usage.calls_with_unknown_cost %}<br><span class="note">{{ j.usage.calls_with_unknown_cost }} calls with unknown cost</span>{% endif %}</td>
+        <td class="num">{{ j.usage.input_tokens if j.usage.input_tokens is not none else "unknown" }} / {{ j.usage.output_tokens if j.usage.output_tokens is not none else "unknown" }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<h2>By category</h2>
+{% for p in per_config %}
+  <h3>{{ p.config.name }}</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Category</th><th class="num">Planned</th><th class="num">Verified success</th><th class="num">Strict success</th><th class="num">Coverage</th><th class="num">Unsafe attempts</th></tr></thead>
+      <tbody>
+      {% for c in p.categories %}
+        <tr><td>{{ c.category }}</td><td class="num">{{ c.planned_runs }}</td><td class="num">{{ c.verified_success_rate|pct }}</td>
+          <td class="num">{{ c.strict_success_rate|pct }}</td><td class="num">{{ c.evaluation_coverage|pct }}</td><td class="num">{{ c.unsafe_attempt_rate|pct }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endfor %}
+
+<h2>Failure reasons</h2>
+{% if reasons %}
+<div class="table-wrap">
+  <table id="reasons">
+    <thead><tr><th>Evaluator</th><th>Status</th><th>Reason code</th><th class="num">Runs</th></tr></thead>
+    <tbody>
+    {% for r in reasons %}
+      <tr><td>{{ r.evaluator }}</td><td><span class="pill {{ r.status }}">{{ r.status }}</span></td>
+        <td><a href="?q={{ (r.evaluator ~ ':' ~ r.reason_code)|urlencode }}" class="mono">{{ r.reason_code }}</a></td><td class="num">{{ r.runs }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+  <div class="empty">No failing or erroring evaluator scores.</div>
+{% endif %}
+
+<h2>Hard violations</h2>
+{% if violations %}
+<div class="table-wrap">
+  <table id="violations">
+    <thead><tr><th>Run</th><th>Configuration</th><th>Codes</th><th>Effect</th></tr></thead>
+    <tbody>
+    {% for v in violations %}
+      <tr><td><a href="/ui/runs/{{ v.run_id }}">{{ v.task_id }} #{{ v.repetition }}</a></td><td>{{ v.agent_config_name }}</td>
+        <td class="mono">{{ v.codes|join(", ") }}</td>
+        <td>{% if v.executed %}<span class="pill executed">executed</span>{% else %}<span class="pill attempted">attempted, blocked</span>{% endif %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+  <div class="empty">No policy violations attempted or executed.</div>
+{% endif %}
+
+<h2>Runs <span class="note">({{ matching_runs }} of {{ total_runs }}{% if matching_runs > max_rows %}, first {{ max_rows }} shown{% endif %})</span></h2>
+<form class="filters" method="get">
+  <label>Configuration
+    <select name="config"><option value="">all</option>
+      {% for c in configs %}<option value="{{ c.id }}" {% if filters.config == c.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
+    </select></label>
+  <label>Execution
+    <select name="status"><option value="">all</option>
+      {% for s in options.status %}<option {% if filters.status == s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select></label>
+  <label>Evaluation
+    <select name="evaluation_status"><option value="">all</option>
+      {% for s in options.evaluation_status %}<option {% if filters.evaluation_status == s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select></label>
+  <label>Success
+    <select name="success"><option value="">all</option>
+      {% for s in ["true", "false", "unknown"] %}<option {% if filters.success == s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select></label>
+  <label>Category
+    <select name="category"><option value="">all</option>
+      {% for s in options.category %}<option {% if filters.category == s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select></label>
+  <label>Task or reason code <input type="text" name="q" value="{{ filters.q }}"></label>
+  <button class="button primary" type="submit">Filter</button>
+  <a class="button" href="/ui/experiments/{{ experiment.id }}">Reset</a>
+  <label>Quick filter (this page) <input type="search" data-filter="runs" placeholder="type to narrow"></label>
+</form>
+<div class="table-wrap">
+  <table id="runs">
+    <thead><tr><th>Task</th><th>Category</th><th>Configuration</th><th class="num">Rep</th><th>Execution</th><th>Evaluation</th>
+      <th>Failing reasons</th><th class="num">Attempts</th><th class="num">Execution time</th><th class="num">Cost</th></tr></thead>
+    <tbody>
+    {% for r in runs %}
+      <tr>
+        <td><a href="/ui/runs/{{ r.run_id }}">{{ r.task_id }}</a></td>
+        <td>{{ r.category }}</td>
+        <td>{{ r.agent_config_name }}</td>
+        <td class="num">{{ r.repetition }}</td>
+        <td><span class="pill {{ r.status }}">{{ r.status }}</span></td>
+        <td><span class="pill {{ r.evaluation_status }}">{{ r.evaluation_status }}</span></td>
+        <td class="mono">{% for s in r.failing_scores %}{{ s.evaluator_name }}:{{ s.reason_code }}{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
+        <td class="num">{{ r.counted_attempts|length }}</td>
+        <td class="num">{{ r.execution_ms|ms }}</td>
+        <td class="num">{{ r.cost_usd|usd }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="10" class="note">No runs match these filters.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2>Manifest</h2>
+<details><summary>Immutable experiment manifest (dataset, environment and evaluator versions, prompt and tool-schema hashes, code identity, fault config)</summary>
+  <pre>{{ m|pretty }}</pre>
+</details>
+{% endblock %}

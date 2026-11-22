@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Experiments{% endblock %}
+{% block content %}
+<h1>Experiments</h1>
+<p class="note">Success is verified against the hidden end state, not the agent's final message.
+  Verified success = successful / scored runs; coverage = scored / planned runs.</p>
+
+{% if not experiments %}
+  <div class="empty">No experiments yet. Create one with <code>POST /experiments</code>.</div>
+{% else %}
+<div class="table-wrap">
+  <table id="experiments">
+    <thead>
+      <tr>
+        <th>Experiment</th><th>Status</th><th>Configurations</th><th>Dataset</th>
+        <th class="num">Progress</th><th class="num">Verified success</th><th class="num">Coverage</th>
+        <th class="num">Spend</th><th>Started</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for e in experiments %}
+      <tr>
+        <td><a href="/ui/experiments/{{ e.id }}">{{ e.name or e.id|short }}</a><br><span class="note mono">{{ e.id|short }}</span></td>
+        <td><span class="pill {{ e.status }}">{{ e.status }}</span></td>
+        <td>
+          {% for c in e.agent_configs %}
+            <div>{{ c.name }}{% if c.model %} <span class="note">· {{ c.model }}</span>{% endif %}</div>
+          {% endfor %}
+        </td>
+        <td>{{ e.dataset.name or "-" }} <span class="note">· {{ e.split }} · ×{{ e.repetitions }}</span>
+          <br><span class="note mono">{{ e.dataset.content_hash|short(12) }}</span></td>
+        <td class="num">{{ e.progress|pct }}</td>
+        <td class="num">{{ e.verified_success_rate|pct }}</td>
+        <td class="num">{{ e.evaluation_coverage|pct }}</td>
+        <td class="num">{{ e.cost_usd|usd }}{% if e.attempts_with_unknown_cost %}<br><span class="note">{{ e.attempts_with_unknown_cost }} attempts unknown</span>{% endif %}</td>
+        <td>{{ e.started_at|when if e.started_at else "not started" }}<br><span class="note">created {{ e.created_at|when }}</span></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

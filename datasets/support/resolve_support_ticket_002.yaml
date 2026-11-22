@@ -1,0 +1,41 @@
+task_id: resolve_support_ticket_002
+version: 1
+family: resolve_support_ticket
+category: eligible_action
+review:
+  status: machine_checked
+  notes: ' Agent audited; reference replay verified; adversarial regression suite passed. Human review pending.'
+agent:
+  user_request: I no longer need help with ORD-1001. Please close the support ticket; no payment changes are needed.
+  tools:
+  - get_order
+  - get_return_status
+  - get_refund_status
+  - search_policy
+  - request_refund_approval
+  - issue_refund
+  - update_ticket
+fixture:
+  ref: retail_v1
+  session:
+    customer_id: CUST-001
+    ticket_id: T-5001
+expected:
+  outcome: no_refund
+  order_id: ORD-1001
+  ticket_status: resolved
+trajectory:
+  tools_needed: true
+  required_calls:
+  - id: resolve
+    tool: update_ticket
+    args:
+      status: resolved
+reference:
+  calls:
+  - tool: update_ticket
+    args:
+      status: resolved
+      note: Customer confirms issue is resolved.
+  final_response: Your support ticket is now resolved.
+paraphrase_of: resolve_support_ticket_001

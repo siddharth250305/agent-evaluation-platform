@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% block title %}Compare{% endblock %}
+{% block content %}
+<h1>Compare configurations</h1>
+<p class="note">Task-by-task comparison of two compatible (experiment, configuration) pairs: same dataset version and split,
+  environment version, evaluator versions and limits. Deltas are candidate minus baseline.</p>
+
+<form class="filters" method="get">
+  <label>Baseline
+    <select name="baseline" required><option value="">choose…</option>
+      {% for o in options %}<option value="{{ o.value }}" {% if o.value == baseline %}selected{% endif %}>{{ o.label }}</option>{% endfor %}
+    </select></label>
+  <label>Candidate
+    <select name="candidate" required><option value="">choose…</option>
+      {% for o in options %}<option value="{{ o.value }}" {% if o.value == candidate %}selected{% endif %}>{{ o.label }}</option>{% endfor %}
+    </select></label>
+  <button class="button primary" type="submit">Compare</button>
+</form>
+
+{% if error %}<div class="callout error" role="alert"><strong>Cannot compare.</strong> {{ error }}</div>{% endif %}
+{% if not options %}<div class="empty">No experiments yet.</div>{% endif %}
+
+{% if result %}
+{% set s = result.summary %}
+<div class="split">
+  {% for role in ["baseline", "candidate"] %}{% set side = result[role] %}
+  <section class="panel">
+    <span class="tag">{{ role|upper }}</span>
+    <h3><a href="/ui/experiments/{{ side.experiment_id }}">{{ side.experiment_name or side.experiment_id|short }}</a> · {{ side.agent_config_name }}</h3>
+    <div class="meta">
+      <span>{{ side.adapter }}{% if side.model %} · {{ side.model }}{% endif %}</span>
+      <span>prompt <span class="mono">{{ side.prompt_hash|short(12) }}</span></span>
+      <span>×{{ side.repetitions }}</span>
+      <span>{{ side.planned_runs }} runs{% if not side.complete %}, {{ side.unfinished_runs }} unfinished{% endif %}</span>
+    </div>
+  </section>
+  {% endfor %}
+</div>
+{% for w in result.warnings %}<div class="callout warn">{{ w }}</div>{% endfor %}
+{% if result.config_differences %}
+<p class="note">Configuration differences: {% for k, v in result.config_differences.items() %}<span class="mono">{{ k }}</span>{% if not loop.last %}, {% endif %}{% endfor %}.</p>
+{% endif %}
+
+<h2>Same-task results</h2>
+<div class="cards" id="summary">
+  <div class="card"><div class="label">Tasks compared</div><div class="value">{{ s.tasks_compared }}</div></div>
+  <div class="card good"><div class="label">Wins</div><div class="value">{{ s.wins }}</div></div>
+  <div class="card {% if s.losses %}bad{% endif %}"><div class="label">Losses</div><div class="value">{{ s.losses }}</div></div>
+  <div class="card"><div class="label">Ties</div><div class="value">{{ s.ties }}</div></div>
+  <div class="card {% if s.regressions %}bad{% endif %}"><div class="label">Regressions</div><div class="value">{{ s.regressions }}</div></div>
+  <div class="card good"><div class="label">Improvements</div><div class="value">{{ s.improvements }}</div></div>
+</div>
+{% if s.regressed_tasks %}
+<div class="callout error"><strong>Regressed</strong> (baseline passed every repetition, candidate failed at least one):
+  <span class="mono">{{ s.regressed_tasks|join(", ") }}</span></div>
+{% endif %}
+{% if s.improved_tasks %}
+<div class="callout"><strong>Improved</strong>: <span class="mono">{{ s.improved_tasks|join(", ") }}</span></div>
+{% endif %}
+
+<h2>Metric deltas</h2>
+<p class="note">Confidence intervals: {{ (result.bootstrap.confidence * 100)|round(0)|int }}% percentile bootstrap over tasks
+  ({{ result.bootstrap.resamples }} resamples, seed {{ result.bootstrap.seed }}); repetitions of a task are resampled together.</p>
+<div class="table-wrap">
+  <table id="metrics">
+    <thead><tr><th>Metric</th><th class="num">Baseline</th><th class="num">Candidate</th><th class="num">Delta</th><th class="num">Delta CI</th><th>Definition</th></tr></thead>
+    <tbody>
+    {% for name, label, lower_is_better in [
+        ("verified_success_rate", "Verified success", false),
+        ("strict_success_rate", "Strict end-to-end success", false),
+        ("evaluation_coverage", "Evaluation coverage", false),
+        ("passed_all_repetitions", "Passed all repetitions", false),
+        ("unsafe_attempt_rate", "Unsafe attempt rate", true),
+        ("executed_violation_rate", "Executed violation rate", true)] %}
+      {% set m = result.metrics[name] %}
+      {% set worse = m.delta is not none and ((m.delta > 0) if lower_is_better else (m.delta < 0)) %}
+      {% set better = m.delta is not none and ((m.delta < 0) if lower_is_better else (m.delta > 0)) %}
+      <tr>
+        <td>{{ label }}</td>
+        <td class="num">{{ m.baseline|pct }}{% if m.baseline_ci %}<br><span class="note">{{ m.baseline_ci|ci_rate }}</span>{% endif %}</td>
+        <td class="num">{{ m.candidate|pct }}{% if m.candidate_ci %}<br><span class="note">{{ m.candidate_ci|ci_rate }}</span>{% endif %}</td>
+        <td class="num {% if worse %}bad{% elif better %}good{% endif %}">{{ m.delta|pp }}</td>
+        <td class="num">{{ m.delta_ci|ci if m.delta_ci else "-" }}</td>
+        <td class="note">{{ result.definitions[name] }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2>Tool use</h2>
+<p class="note">Call-level counts summed over runs (never an average of per-run ratios). "Not applicable" means no call or
+  required call existed; "unknown" means evaluator errors or ungraded runs hide the answer.</p>
+<div class="table-wrap">
+  <table id="tool-metrics">
+    <thead><tr><th>Metric</th><th class="num">Baseline</th><th class="num">Candidate</th><th class="num">Delta</th><th>Definition</th></tr></thead>
+    <tbody>
+    {% for name, label in [("tool_schema_validity", "Tool schema validity"), ("tool_call_precision", "Tool-call precision"),
+                           ("required_call_recall", "Required-call recall")] %}
+      {% set t = result.tool_metrics[name] %}
+      <tr>
+        <td>{{ label }}</td>
+        <td class="num">{{ t.baseline|tool_rate }}<br><span class="note">{{ t.baseline|tool_runs }}</span></td>
+        <td class="num">{{ t.candidate|tool_rate }}<br><span class="note">{{ t.candidate|tool_runs }}</span></td>
+        <td class="num {% if t.delta is not none and t.delta < 0 %}bad{% elif t.delta is not none and t.delta > 0 %}good{% endif %}">{{ t.delta|pp }}</td>
+        <td class="note">{{ result.definitions[name] }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2>Latency</h2>
+<div class="table-wrap">
+  <table id="latency">
+    <thead><tr><th>Phase</th><th class="num">Baseline median (mean)</th><th class="num">Candidate median (mean)</th><th class="num">Δ median</th><th class="num">Δ mean</th><th>Known / unknown</th></tr></thead>
+    <tbody>
+    {% for phase, label in [("queue", "Queue (created → first attempt)"), ("execution", "Execution (result attempt)")] %}{% set l = result.latency_ms[phase] %}
+      <tr><td>{{ label }}</td>
+        <td class="num">{{ l.baseline.median|ms }} ({{ l.baseline.mean|ms }})</td>
+        <td class="num">{{ l.candidate.median|ms }} ({{ l.candidate.mean|ms }})</td>
+        <td class="num">{{ l.delta_median|ms_delta }}</td><td class="num">{{ l.delta_mean|ms_delta }}</td>
+        <td class="note">{{ l.baseline.n }}/{{ l.baseline.unknown }} vs {{ l.candidate.n }}/{{ l.candidate.unknown }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2>Cost</h2>
+{% set cb, cc = result.cost.baseline, result.cost.candidate %}
+<div class="table-wrap">
+  <table id="cost">
+    <thead><tr><th>Measure</th><th class="num">Baseline</th><th class="num">Candidate</th><th class="num">Delta</th></tr></thead>
+    <tbody>
+      <tr><td>Total cost (retries included)</td><td class="num">{{ cb.cost_usd|usd }}</td><td class="num">{{ cc.cost_usd|usd }}</td><td class="num">{{ result.cost.delta_cost_usd|usd_delta }}</td></tr>
+      <tr><td>Cost per successful run</td>
+        <td class="num">{{ cb.cost_per_successful_run_usd.value|usd if cb.cost_per_successful_run_usd.denominator else "n/a" }} <span class="note">÷ {{ cb.cost_per_successful_run_usd.denominator }}</span></td>
+        <td class="num">{{ cc.cost_per_successful_run_usd.value|usd if cc.cost_per_successful_run_usd.denominator else "n/a" }} <span class="note">÷ {{ cc.cost_per_successful_run_usd.denominator }}</span></td>
+        <td class="num">{{ result.cost.delta_cost_per_successful_run_usd|usd_delta }}</td></tr>
+      <tr><td>Attempts (retries)</td><td class="num">{{ cb.attempts }} ({{ cb.retry_attempts }})</td><td class="num">{{ cc.attempts }} ({{ cc.retry_attempts }})</td><td></td></tr>
+      <tr><td>Attempts with unknown usage</td><td class="num">{{ cb.attempts_with_unknown_cost }}</td><td class="num">{{ cc.attempts_with_unknown_cost }}</td><td></td></tr>
+      <tr><td>Tokens in / out</td>
+        <td class="num">{{ cb.input_tokens if cb.input_tokens is not none else "unknown" }} / {{ cb.output_tokens if cb.output_tokens is not none else "unknown" }}</td>
+        <td class="num">{{ cc.input_tokens if cc.input_tokens is not none else "unknown" }} / {{ cc.output_tokens if cc.output_tokens is not none else "unknown" }}</td><td></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2>Per task</h2>
+<div class="toggle" data-toggle-group="tasks">
+  <button type="button" data-show="all" aria-pressed="true">All</button>
+  <button type="button" data-show="regression" aria-pressed="false">Regressions</button>
+  <button type="button" data-show="loss" aria-pressed="false">Losses</button>
+  <button type="button" data-show="win" aria-pressed="false">Wins</button>
+  <button type="button" data-show="tie" aria-pressed="false">Ties</button>
+</div>
+<div class="table-wrap">
+  <table id="tasks">
+    <thead><tr><th>Task</th><th>Category</th><th class="num">Baseline passed</th><th class="num">Candidate passed</th><th>Result</th><th></th></tr></thead>
+    <tbody>
+    {% for t in result.tasks %}
+      <tr data-kind="all {{ t.result }}{% if t.regression %} regression{% endif %}{% if t.improvement %} improvement{% endif %}">
+        <td class="mono">{{ t.task_id }}</td><td>{{ t.category }}</td>
+        <td class="num">{{ t.baseline.passed }}/{{ t.baseline.planned }}</td>
+        <td class="num">{{ t.candidate.passed }}/{{ t.candidate.planned }}</td>
+        <td><span class="pill {{ t.result }}">{{ t.result }}</span></td>
+        <td>{% if t.regression %}<span class="pill regression">regression</span>{% elif t.improvement %}<span class="pill improvement">improvement</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,54 @@
+task_id: escalation_damaged_001
+version: 2
+family: escalation_damaged
+category: eligible_action
+review:
+  status: machine_checked
+  notes: 'Agent audited: visible request, hidden state, reference, and constraints checked; reference replay verified;
+    adversarial regression suite passed. Human review pending.'
+agent:
+  user_request: My robot vacuum from order ORD-2003 arrived broken and I want to speak to a manager.
+  tools:
+  - get_order
+  - get_return_status
+  - get_refund_status
+  - search_policy
+  - request_refund_approval
+  - issue_refund
+  - update_ticket
+fixture:
+  ref: retail_v1
+  session:
+    customer_id: CUST-002
+    ticket_id: T-6001
+expected:
+  outcome: no_refund
+  order_id: ORD-2003
+  ticket_status: escalated
+trajectory:
+  tools_needed: true
+  required_calls:
+  - id: lookup
+    tool: get_order
+    args:
+      order_id: ORD-2003
+    missing_code: MISSING_ORDER_LOOKUP
+  - id: escalate
+    tool: update_ticket
+    args:
+      status: escalated
+    missing_code: MISSING_ESCALATION
+  order:
+  - - lookup
+    - escalate
+reference:
+  calls:
+  - tool: get_order
+    args:
+      order_id: ORD-2003
+  - tool: update_ticket
+    args:
+      status: escalated
+      note: Damaged on arrival; customer requests a manager.
+  final_response: I'm sorry your robot vacuum from order ORD-2003 arrived damaged. I've escalated your ticket to
+    a manager, who will follow up with you.

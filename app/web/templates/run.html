@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}{{ task.task_id }} · {{ config.name }}{% endblock %}
+{% block content %}
+<p class="note"><a href="/ui/experiments">Experiments</a> /
+  <a href="/ui/experiments/{{ experiment.id }}">{{ experiment.name or experiment.id|string|short }}</a> /</p>
+<h1>{{ task.task_id }} <span class="note">· {{ config.name }} · repetition {{ run.repetition }}</span></h1>
+<div class="meta">
+  <span>execution <span class="pill {{ run.status }}">{{ run.status }}</span></span>
+  <span>evaluation <span class="pill {{ run.evaluation_status }}">{{ run.evaluation_status }}</span></span>
+  <span>category {{ task.category }}</span>
+  <span>split {{ task.split }}</span>
+  <span class="mono">run {{ run.id }}</span>
+</div>
+
+<h2>Attempts</h2>
+<div class="table-wrap">
+  <table id="attempts">
+    <thead><tr><th class="num">#</th><th>Status</th><th>Environment</th><th>Stop reason / error</th><th class="num">Duration</th><th class="num">Tokens in / out</th><th class="num">Cost</th><th></th></tr></thead>
+    <tbody>
+    {% for a in attempts %}
+      <tr>
+        <td class="num">{{ a.attempt_number }}</td>
+        <td><span class="pill {{ a.status }}">{{ a.status }}</span></td>
+        <td class="mono">{{ a.environment_id }}</td>
+        <td>{{ a.stop_reason or "-" }}{% if a.error_code %} <span class="pill fail">{{ a.error_code }}</span>{% endif %}</td>
+        <td class="num">{{ a.duration_ms|ms }}</td>
+        <td class="num">{{ a.input_tokens if a.input_tokens is not none else "unknown" }} / {{ a.output_tokens if a.output_tokens is not none else "unknown" }}</td>
+        <td class="num">{{ a.cost_usd|usd }}</td>
+        <td>{% if selected and a.id == selected.id %}<strong>shown below</strong>{% else %}<a href="?attempt={{ a.attempt_number }}">show</a>{% endif %}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="8" class="note">No attempt has started yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2>Input vs. ground truth</h2>
+<div class="split">
+  <section class="panel visible" aria-labelledby="visible-heading">
+    <span class="tag">AGENT-VISIBLE</span>
+    <h3 id="visible-heading">What the agent was given</h3>
+    <dl>
+      <dt>User request</dt><dd><div class="request">{{ agent_visible.user_request }}</div></dd>
+      <dt>Tools offered</dt><dd class="mono">{{ agent_visible.tools|join(", ") if agent_visible.tools else "none" }}</dd>
+      <dt>System prompt</dt><dd>{% if agent_visible.system_prompt %}<details><summary>show ({{ agent_visible.system_prompt|length }} chars)</summary><pre>{{ agent_visible.system_prompt }}</pre></details>{% else %}<span class="note">adapter default</span>{% endif %}</dd>
+      <dt>Adapter / model</dt><dd>{{ config.adapter }}{% if config.model %} · {{ config.model }}{% endif %}</dd>
+    </dl>
+    <p class="note">The agent never receives the task id, fixture, expected outcome or grading rules.</p>
+  </section>
+  <section class="panel hidden-truth" aria-labelledby="hidden-heading">
+    <span class="tag">HIDDEN FROM THE AGENT · EVALUATOR-ONLY</span>
+    <h3 id="hidden-heading">Ground truth</h3>
+    <dl>
+      <dt>Expected outcome</dt><dd><pre>{{ hidden.expected|pretty }}</pre></dd>
+      <dt>Trajectory spec</dt><dd><details><summary>required calls and ordering</summary><pre>{{ hidden.trajectory|pretty }}</pre></details></dd>
+      <dt>Reference solution</dt><dd><details><summary>reference calls and response</summary><pre>{{ hidden.reference|pretty }}</pre></details></dd>
+      <dt>Initial fixture</dt><dd><details><summary>environment state before the attempt</summary><pre>{{ hidden.fixture|pretty }}</pre></details></dd>
+    </dl>
+  </section>
+</div>
+
+{% if selected %}
+<h2>Outcome of attempt {{ selected.attempt_number }}</h2>
+<div class="split">
+  <section class="panel visible" aria-labelledby="response-heading">
+    <span class="tag">AGENT OUTPUT</span>
+    <h3 id="response-heading">Final response (evidence, not proof)</h3>
+    {% if selected.final_response is not none %}
+      <div class="request">{{ selected.final_response }}</div>
+    {% else %}
+      <p class="note">No final response was recorded.</p>
+    {% endif %}
+  </section>
+  <section class="panel hidden-truth" aria-labelledby="findings-heading">
+    <span class="tag">HIDDEN FROM THE AGENT · EVALUATOR FINDINGS</span>
+    <h3 id="findings-heading">Evaluator scores</h3>
+    {% if scores %}
+    <table id="scores">
+      <thead><tr><th>Evaluator</th><th>Status</th><th>Reason</th><th class="num">Value</th></tr></thead>
+      <tbody>
+      {% for s in scores %}
+        <tr>
+          <td>{{ s.evaluator_name }} <span class="note">{{ s.evaluator_version }}</span></td>
+          <td><span class="pill {{ s.status }}">{{ s.status }}</span>{% if s.applicability != "applicable" %} <span class="note">{{ s.applicability }}</span>{% endif %}</td>
+          <td class="mono">{{ s.reason_code }}<details><summary>evidence</summary><pre>{{ s.evidence|pretty }}</pre></details></td>
+          <td class="num">{{ "%.2f"|format(s.value) if s.value is not none else "-" }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+      <p class="note">This attempt was not graded (infrastructure error, cancellation, or still running).</p>
+    {% endif %}
+    {% if judged %}
+    <h3 id="judge-heading">LLM judge <span class="note">secondary · uncalibrated · does not affect success</span></h3>
+    <table id="judge-scores">
+      <thead><tr><th>Judge</th><th>Status</th><th>Scores (1-5)</th><th class="num">Judge cost</th></tr></thead>
+      <tbody>
+      {% for j in judged %}
+        <tr>
+          <td>{{ j.judge_name }} <span class="note">{{ j.judge_version }} · {{ j.resolved_model or j.model }}</span></td>
+          <td>{% if j.status == "scored" %}<span class="pill not_applicable">scored</span>{% else %}<span class="pill evaluation_error">evaluation_error</span><br><span class="mono note">{{ j.reason_code }}</span>{% endif %}</td>
+          <td>{% if j.scores %}{% for d, v in j.scores|dictsort %}<strong>{{ d }}</strong> {{ v.score }}: {{ v.reason }}<br>{% endfor %}{% else %}<span class="note">{{ j.error }}</span>{% endif %}</td>
+          <td class="num">{{ j.cost_usd|usd }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </section>
+</div>
+
+<section class="panel hidden-truth" style="margin-top:16px" aria-labelledby="diff-heading">
+  <span class="tag">HIDDEN FROM THE AGENT · FINAL STATE DIFF</span>
+  <h3 id="diff-heading">What actually changed in the environment</h3>
+  {% if diff is none %}
+    <p class="note">No snapshots were recorded for this attempt.</p>
+  {% elif not diff %}
+    <p class="note">Nothing changed: the final state equals the initial state.</p>
+  {% else %}
+  <div class="table-wrap">
+    <table class="diff" id="state-diff">
+      <thead><tr><th>Path</th><th>Change</th><th>Before</th><th>After</th></tr></thead>
+      <tbody>
+      {% for d in diff %}
+        <tr><td class="mono">{{ d.path }}</td><td>{{ d.change }}</td>
+          <td class="before"><pre>{{ d.before|pretty if d.before is not none else "-" }}</pre></td>
+          <td class="after"><pre>{{ d.after|pretty if d.after is not none else "-" }}</pre></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
+<h2>Trace <span class="note">({{ timeline|length }} events, {{ flagged_count }} cited by failing evaluators)</span></h2>
+<div class="toggle" data-toggle-group="timeline">
+  <button type="button" data-show="all" aria-pressed="true">All events</button>
+  <button type="button" data-show="flagged" aria-pressed="false">Only cited by failing evaluators</button>
+  <button type="button" data-show="tool" aria-pressed="false">Tool calls</button>
+</div>
+<ol class="timeline" id="timeline">
+  {% for item in timeline %}{% set e = item.event %}
+  <li class="{{ item.flags|join(' ') }}" data-kind="all {{ item.flags|join(' ') }}{% if e.kind.startswith('tool_') %} tool{% endif %}" id="event-{{ e.event_sequence }}">
+    <span class="seq">#{{ e.event_sequence }}</span>
+    <span class="kind">{{ e.kind }}</span>
+    <div class="body">
+      <strong>{{ e.name }}</strong>
+      {% if "denied" in item.flags %}<span class="pill attempted">denied by gateway</span>{% endif %}
+      {% if "failed-effect" in item.flags %}<span class="pill attempted">effect failed</span>{% endif %}
+      {% for c in item.cited_by %}<div class="cited">⚑ {{ c }}</div>{% endfor %}
+      <span class="note">{{ e.recorded_at|when }}</span>
+      <details><summary>payload</summary><pre>{{ e.payload|pretty }}</pre></details>
+    </div>
+  </li>
+  {% else %}
+  <li class="note">No trace events were recorded for this attempt.</li>
+  {% endfor %}
+</ol>
+{% endif %}
+{% endblock %}

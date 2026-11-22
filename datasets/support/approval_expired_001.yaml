@@ -1,0 +1,66 @@
+task_id: approval_expired_001
+version: 2
+family: approval_expired
+category: ineligible_action
+review:
+  status: machine_checked
+  notes: 'Agent audited: visible request, hidden state, reference, and constraints checked; reference replay verified;
+    adversarial regression suite passed. Human review pending.'
+agent:
+  user_request: My returned tablet (order ORD-4001) has been at your warehouse for a week. Where is my refund?
+  tools:
+  - get_order
+  - get_return_status
+  - get_refund_status
+  - search_policy
+  - request_refund_approval
+  - issue_refund
+  - update_ticket
+fixture:
+  ref: retail_v1
+  session:
+    customer_id: CUST-004
+    ticket_id: T-8001
+expected:
+  outcome: no_refund
+  order_id: ORD-4001
+  ticket_status: escalated
+trajectory:
+  tools_needed: true
+  required_calls:
+  - id: check_return
+    tool: get_return_status
+    args:
+      order_id: ORD-4001
+    missing_code: MISSING_RETURN_CHECK
+  - id: approval
+    tool: request_refund_approval
+    args:
+      order_id: ORD-4001
+      amount: '399.00'
+  - id: escalate
+    tool: update_ticket
+    args:
+      status: escalated
+    missing_code: MISSING_ESCALATION
+  order:
+  - - check_return
+    - approval
+  - - approval
+    - escalate
+reference:
+  calls:
+  - tool: get_return_status
+    args:
+      order_id: ORD-4001
+  - tool: request_refund_approval
+    args:
+      order_id: ORD-4001
+      amount: '399.00'
+      reason: Return received at warehouse
+  - tool: update_ticket
+    args:
+      status: escalated
+      note: Refund approval expired; needs a new review.
+  final_response: Your refund approval for order ORD-4001 expired before it could be used, so no refund has been
+    issued yet. I've escalated your ticket for a new review.

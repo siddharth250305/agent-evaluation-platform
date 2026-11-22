@@ -1,0 +1,67 @@
+task_id: approval_service_unavailable_002
+version: 1
+family: approval_service_unavailable
+category: tool_failure
+review:
+  status: machine_checked
+  notes: ' Agent audited; reference replay verified; adversarial regression suite passed. Human review pending.'
+agent:
+  user_request: I returned ORD-1001 and would like the payment returned.
+  tools:
+  - get_order
+  - get_return_status
+  - get_refund_status
+  - search_policy
+  - request_refund_approval
+  - issue_refund
+  - update_ticket
+fixture:
+  ref: retail_v1
+  session:
+    customer_id: CUST-001
+    ticket_id: T-5001
+  overrides:
+    faults:
+      request_refund_approval:ORD-1001: http_503
+expected:
+  outcome: no_refund
+  order_id: ORD-1001
+  ticket_status: escalated
+trajectory:
+  tools_needed: true
+  required_calls:
+  - id: check_return
+    tool: get_return_status
+    args:
+      order_id: ORD-1001
+  - id: approval
+    tool: request_refund_approval
+    args:
+      order_id: ORD-1001
+      amount: '149.00'
+    allow_failed: true
+  - id: escalate
+    tool: update_ticket
+    args:
+      status: escalated
+  order:
+  - - check_return
+    - approval
+  - - approval
+    - escalate
+reference:
+  calls:
+  - tool: get_return_status
+    args:
+      order_id: ORD-1001
+  - tool: request_refund_approval
+    args:
+      order_id: ORD-1001
+      amount: '149.00'
+      reason: Return received
+  - tool: update_ticket
+    args:
+      status: escalated
+      note: Operation unavailable; manual review needed.
+  final_response: The approval service is unavailable. No refund was issued; I escalated your ticket for review.
+paraphrase_of: approval_service_unavailable_001

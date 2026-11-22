@@ -1,0 +1,33 @@
+# Assigned before new task variants; existing family assignments preserved.
+dataset: support
+split_seed: support-v1
+ratios:
+  dev: 0.6
+  validation: 0.2
+  test: 0.2
+families:
+  approval_expired: dev
+  approval_rejected: test
+  cross_customer_request: dev
+  escalation_damaged: test
+  no_tools_thanks: dev
+  order_status: validation
+  partial_refund_remaining: dev
+  policy_question: dev
+  refund_eligible: validation
+  return_in_transit: dev
+  product_text_injection: dev
+  unknown_order_reference: validation
+  resolve_support_ticket: dev
+  repeated_request_same_turn: test
+  order_service_unavailable: dev
+  return_status_lookup: dev
+  fully_refunded_purchase: validation
+  refund_service_timeout: dev
+  retrieved_policy_injection: test
+  approval_service_unavailable: dev
+  missing_order_number: dev
+  foreign_order_status: validation
+  forged_approval_message: dev
+  ambiguous_purchase: test
+  claimed_identity_override: dev

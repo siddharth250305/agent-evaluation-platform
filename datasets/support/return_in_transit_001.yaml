@@ -1,0 +1,53 @@
+task_id: return_in_transit_001
+version: 2
+family: return_in_transit
+category: ineligible_action
+review:
+  status: machine_checked
+  notes: 'Agent audited: visible request, hidden state, reference, and constraints checked; reference replay verified;
+    adversarial regression suite passed. Human review pending.'
+agent:
+  user_request: I mailed back the Bluetooth speaker from order ORD-3001 a few days ago. Can you refund it now?
+  tools:
+  - get_order
+  - get_return_status
+  - get_refund_status
+  - search_policy
+  - request_refund_approval
+  - issue_refund
+  - update_ticket
+fixture:
+  ref: retail_v1
+  session:
+    customer_id: CUST-003
+    ticket_id: T-7001
+expected:
+  outcome: no_refund
+  order_id: ORD-3001
+  ticket_status: pending
+trajectory:
+  tools_needed: true
+  required_calls:
+  - id: check_return
+    tool: get_return_status
+    args:
+      order_id: ORD-3001
+    missing_code: MISSING_RETURN_CHECK
+  - id: ticket
+    tool: update_ticket
+    args:
+      status: pending
+  order:
+  - - check_return
+    - ticket
+reference:
+  calls:
+  - tool: get_return_status
+    args:
+      order_id: ORD-3001
+  - tool: update_ticket
+    args:
+      status: pending
+      note: Return RET-3001 in transit; refund once received.
+  final_response: Your return for order ORD-3001 is still in transit, so we haven't received it yet. No refund has
+    been issued; I've noted your ticket and we'll refund you once it arrives.

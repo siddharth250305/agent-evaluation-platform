@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Benchmarks{% endblock %}
+{% block content %}
+<h1>Public benchmarks</h1>
+<div class="callout">Pinned public benchmark results live here, <strong>separately</strong> from custom support-task scores.
+  They are never blended into experiment scorecards or comparisons: a benchmark measures a different task
+  distribution with its own scoring method.</div>
+
+{% if not results %}
+  <div class="empty" id="no-benchmarks">No benchmark results imported yet. Run <code>make bfcl-self-check</code> (offline)
+    or <code>make bfcl</code> (needs an API key) to add a pinned BFCL category with its version, task count, scoring
+    method and raw output artifact.</div>
+{% else %}
+<div class="table-wrap">
+  <table id="benchmarks">
+    <thead><tr><th>Benchmark</th><th>Version</th><th>Category</th><th>Run by</th><th class="num">Tasks</th>
+      <th class="num">Accuracy (passed / scored)</th><th>Errors</th><th>Scoring method</th><th>Usage</th><th>Raw output</th><th>Imported</th></tr></thead>
+    <tbody>
+    {% for b in results %}
+      {% set m = b.metrics %}
+      <tr class="benchmark-row">
+        <td>{{ b.benchmark }}</td>
+        <td class="mono">{{ b.benchmark_version }}</td>
+        <td>{{ b.category }}
+          {% if b.category_task_count and b.task_count < b.category_task_count %}
+            <br><span class="pill partial subset-label">subset {{ b.task_count }}/{{ b.category_task_count }}</span>
+            <br><span class="note">{{ b.subset_method }}</span>
+          {% elif b.category_task_count %}<br><span class="pill pass">full category</span>{% endif %}</td>
+        <td>{% if b.result_kind == "scorer_self_check" %}<span class="pill not_applicable kind-label">scorer self-check</span>
+              <br><span class="note">ground-truth replay; not a model score</span>
+            {% else %}{{ b.model or "-" }}{% endif %}</td>
+        <td class="num">{{ b.task_count }}</td>
+        <td class="num">{% if m.accuracy is mapping %}{{ m.accuracy|pct }}{% elif m.accuracy is defined and m.accuracy is not none %}{{ m.accuracy }}{% else %}-{% endif %}{% if m.strict_accuracy %}<br><span class="note">strict {{ m.strict_accuracy|pct }}</span>{% endif %}</td>
+        <td>{% if m.infrastructure_errors or m.evaluation_errors %}{{ m.infrastructure_errors or 0 }} infra, {{ m.evaluation_errors or 0 }} scorer{% else %}none{% endif %}
+          {% if m.error_types %}<details><summary>failure types</summary>{% for k, v in m.error_types|dictsort %}<span class="mono">{{ k }}</span>: {{ v }}<br>{% endfor %}</details>{% endif %}</td>
+        <td>{{ b.scoring_method }}{% if b.manifest.scoring and b.manifest.scoring.official_leaderboard_comparable == false %}<br><span class="note">not leaderboard-comparable</span>{% endif %}</td>
+        <td>{% if b.result_kind == "scorer_self_check" %}no model called{% elif m.usage %}{{ m.usage.cost_usd|usd }}<br><span class="note">{{ m.usage.input_tokens if m.usage.input_tokens is not none else "unknown" }} in / {{ m.usage.output_tokens if m.usage.output_tokens is not none else "unknown" }} out</span>{% else %}-{% endif %}</td>
+        <td>{% if b.raw_artifact_uri %}<a href="/ui/benchmarks/{{ b.id }}/raw">raw_outputs.jsonl</a><br><span class="mono note">{{ b.raw_artifact_uri }}</span>{% else %}-{% endif %}</td>
+        <td>{{ b.imported_at|when }}<details><summary>manifest</summary><pre>{{ b.manifest|pretty }}</pre></details></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

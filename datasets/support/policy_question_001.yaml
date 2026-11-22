@@ -1,0 +1,37 @@
+task_id: policy_question_001
+version: 2
+family: policy_question
+category: read_only_lookup
+review:
+  status: machine_checked
+  notes: 'Agent audited: visible request, hidden state, reference, and constraints checked; reference replay verified;
+    adversarial regression suite passed. Human review pending.'
+agent:
+  user_request: How long do I have to return something for a refund?
+  tools:
+  - get_order
+  - get_return_status
+  - get_refund_status
+  - search_policy
+  - request_refund_approval
+  - issue_refund
+  - update_ticket
+fixture:
+  ref: retail_v1
+  session:
+    customer_id: CUST-002
+    ticket_id: T-6001
+expected:
+  outcome: no_refund
+trajectory:
+  tools_needed: true
+  required_calls:
+  - id: policy_lookup
+    tool: search_policy
+    missing_code: MISSING_POLICY_LOOKUP
+reference:
+  calls:
+  - tool: search_policy
+    args:
+      query: return window refund
+  final_response: You can return items within 30 days of delivery for a full refund.

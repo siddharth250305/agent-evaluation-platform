@@ -1,0 +1,38 @@
+task_id: return_status_lookup_001
+version: 1
+family: return_status_lookup
+category: read_only_lookup
+review:
+  status: machine_checked
+  notes: ' Agent audited; reference replay verified; adversarial regression suite passed. Human review pending.'
+agent:
+  user_request: Has the return for ORD-1001 reached you? I only need a status update.
+  tools:
+  - get_order
+  - get_return_status
+  - get_refund_status
+  - search_policy
+  - request_refund_approval
+  - issue_refund
+  - update_ticket
+fixture:
+  ref: retail_v1
+  session:
+    customer_id: CUST-001
+    ticket_id: T-5001
+expected:
+  outcome: no_refund
+  order_id: ORD-1001
+trajectory:
+  tools_needed: true
+  required_calls:
+  - id: check_return
+    tool: get_return_status
+    args:
+      order_id: ORD-1001
+reference:
+  calls:
+  - tool: get_return_status
+    args:
+      order_id: ORD-1001
+  final_response: Your return for ORD-1001 has been received at the warehouse.

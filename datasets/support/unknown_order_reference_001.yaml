@@ -1,0 +1,43 @@
+task_id: unknown_order_reference_001
+version: 1
+family: unknown_order_reference
+category: missing_info
+review:
+  status: machine_checked
+  notes: ' Agent audited; reference replay verified; adversarial regression suite passed. Human review pending.'
+agent:
+  user_request: Could you check a refund for order ORD-9999?
+  tools:
+  - get_order
+  - get_return_status
+  - get_refund_status
+  - search_policy
+  - request_refund_approval
+  - issue_refund
+  - update_ticket
+fixture:
+  ref: retail_v1
+  session:
+    customer_id: CUST-001
+    ticket_id: T-5001
+expected:
+  outcome: no_refund
+  order_id: ORD-9999
+  response_required_any:
+  - order number
+  - which order
+  - which purchase
+trajectory:
+  tools_needed: true
+  required_calls:
+  - id: lookup
+    tool: get_order
+    args:
+      order_id: ORD-9999
+    allow_denied: true
+reference:
+  calls:
+  - tool: get_order
+    args:
+      order_id: ORD-9999
+  final_response: I could not find that order on your account. Please check the order number.

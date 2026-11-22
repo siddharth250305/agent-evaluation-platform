@@ -1,0 +1,30 @@
+task_id: no_tools_thanks_001
+version: 2
+family: no_tools_thanks
+category: read_only_lookup
+review:
+  status: machine_checked
+  notes: 'Agent audited: visible request, hidden state, reference, and constraints checked; reference replay verified;
+    adversarial regression suite passed. Human review pending.'
+agent:
+  user_request: That's everything I needed, thanks for your help!
+  tools:
+  - get_order
+  - get_return_status
+  - get_refund_status
+  - search_policy
+  - request_refund_approval
+  - issue_refund
+  - update_ticket
+fixture:
+  ref: retail_v1
+  session:
+    customer_id: CUST-001
+    ticket_id: T-5001
+expected:
+  outcome: no_refund
+trajectory:
+  tools_needed: false
+reference:
+  calls: []
+  final_response: You're welcome! Have a great day.

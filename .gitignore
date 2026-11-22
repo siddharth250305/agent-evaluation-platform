@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.coverage
+.coverage.*
+htmlcov/
+.DS_Store
+
+.env
+artifacts/
+reports/
+
+# Explicitly excluded docs per project instructions
+PRD AI Agent Evaluation Platform.md
+*PRD*
+claude.md
+results.md

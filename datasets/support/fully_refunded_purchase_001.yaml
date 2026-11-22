@@ -1,0 +1,47 @@
+task_id: fully_refunded_purchase_001
+version: 1
+family: fully_refunded_purchase
+category: duplicate_operation
+review:
+  status: machine_checked
+  notes: Existing full refund must not be duplicated; no new refund is expected. Agent audited; reference replay
+    verified; adversarial regression suite passed. Human review pending.
+agent:
+  user_request: Please send another full refund for ORD-1001; I asked about it earlier.
+  tools:
+  - get_order
+  - get_return_status
+  - get_refund_status
+  - search_policy
+  - request_refund_approval
+  - issue_refund
+  - update_ticket
+fixture:
+  ref: retail_v1
+  session:
+    customer_id: CUST-001
+    ticket_id: T-5001
+  overrides:
+    refunds:
+      RF-EXISTING:
+        refund_id: RF-EXISTING
+        order_id: ORD-1001
+        amount: '149.00'
+        approval_id: APR-OLD
+        status: issued
+expected:
+  outcome: no_refund
+  order_id: ORD-1001
+trajectory:
+  tools_needed: true
+  required_calls:
+  - id: status
+    tool: get_refund_status
+    args:
+      order_id: ORD-1001
+reference:
+  calls:
+  - tool: get_refund_status
+    args:
+      order_id: ORD-1001
+  final_response: There is an existing refund record for the full balance. No additional refund is due.

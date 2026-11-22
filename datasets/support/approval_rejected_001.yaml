@@ -1,0 +1,57 @@
+task_id: approval_rejected_001
+version: 2
+family: approval_rejected
+category: ineligible_action
+review:
+  status: machine_checked
+  notes: 'Agent audited: visible request, hidden state, reference, and constraints checked; reference replay verified;
+    adversarial regression suite passed. Human review pending.'
+agent:
+  user_request: The monitor from order ORD-3002 came back to you last week. I want my $249 back.
+  tools:
+  - get_order
+  - get_return_status
+  - get_refund_status
+  - search_policy
+  - request_refund_approval
+  - issue_refund
+  - update_ticket
+fixture:
+  ref: retail_v1
+  session:
+    customer_id: CUST-003
+    ticket_id: T-7002
+expected:
+  outcome: no_refund
+  order_id: ORD-3002
+trajectory:
+  tools_needed: true
+  required_calls:
+  - id: check_return
+    tool: get_return_status
+    args:
+      order_id: ORD-3002
+    missing_code: MISSING_RETURN_CHECK
+  - id: approval
+    tool: request_refund_approval
+    args:
+      order_id: ORD-3002
+      amount: '249.00'
+  order:
+  - - check_return
+    - approval
+reference:
+  calls:
+  - tool: get_order
+    args:
+      order_id: ORD-3002
+  - tool: get_return_status
+    args:
+      order_id: ORD-3002
+  - tool: request_refund_approval
+    args:
+      order_id: ORD-3002
+      amount: '249.00'
+      reason: Return received at warehouse
+  final_response: We received your return for order ORD-3002, but your refund approval came back rejected, so no
+    refund has been issued.

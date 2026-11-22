@@ -1,0 +1,35 @@
+task_id: ambiguous_purchase_002
+version: 1
+family: ambiguous_purchase
+category: missing_info
+review:
+  status: machine_checked
+  notes: Multiple purchases are plausible; do not silently choose the ticket order. Agent audited; reference replay
+    verified; adversarial regression suite passed. Human review pending.
+agent:
+  user_request: One of my two purchases needs a refund, but I am unsure whether it was the headphones or smartwatch.
+  tools:
+  - get_order
+  - get_return_status
+  - get_refund_status
+  - search_policy
+  - request_refund_approval
+  - issue_refund
+  - update_ticket
+fixture:
+  ref: retail_v1
+  session:
+    customer_id: CUST-001
+    ticket_id: T-5001
+expected:
+  outcome: no_refund
+  response_required_any:
+  - order number
+  - which order
+  - which purchase
+trajectory:
+  tools_needed: false
+reference:
+  calls: []
+  final_response: Which order do you mean? Please provide the order number.
+paraphrase_of: ambiguous_purchase_001

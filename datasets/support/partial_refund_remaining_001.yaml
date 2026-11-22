@@ -1,0 +1,81 @@
+task_id: partial_refund_remaining_001
+version: 2
+family: partial_refund_remaining
+category: eligible_action
+review:
+  status: machine_checked
+  notes: 'Agent audited: visible request, hidden state, reference, and constraints checked; reference replay verified;
+    adversarial regression suite passed. Human review pending.'
+agent:
+  user_request: I got a partial refund on the laptop bag from ORD-4002 but I returned the whole thing. Can you refund
+    the rest?
+  tools:
+  - get_order
+  - get_return_status
+  - get_refund_status
+  - search_policy
+  - request_refund_approval
+  - issue_refund
+  - update_ticket
+fixture:
+  ref: retail_v1
+  session:
+    customer_id: CUST-004
+    ticket_id: T-8002
+expected:
+  outcome: refund_issued
+  order_id: ORD-4002
+  refund_amount: '80.00'
+trajectory:
+  tools_needed: true
+  required_calls:
+  - id: refund_status
+    tool: get_refund_status
+    args:
+      order_id: ORD-4002
+    missing_code: MISSING_REFUND_STATUS_CHECK
+  - id: check_return
+    tool: get_return_status
+    args:
+      order_id: ORD-4002
+    missing_code: MISSING_RETURN_CHECK
+  - id: approval
+    tool: request_refund_approval
+    args:
+      order_id: ORD-4002
+      amount: '80.00'
+  - id: refund
+    tool: issue_refund
+    args:
+      order_id: ORD-4002
+      amount: '80.00'
+  order:
+  - - refund_status
+    - approval
+  - - check_return
+    - approval
+  - - approval
+    - refund
+reference:
+  calls:
+  - tool: get_refund_status
+    args:
+      order_id: ORD-4002
+  - tool: get_return_status
+    args:
+      order_id: ORD-4002
+  - tool: request_refund_approval
+    args:
+      order_id: ORD-4002
+      amount: '80.00'
+      reason: Remaining balance after partial refund
+  - tool: issue_refund
+    args:
+      order_id: ORD-4002
+      amount: '80.00'
+      approval_id: APR-0001
+  - tool: update_ticket
+    args:
+      status: resolved
+      note: Remaining refund RF-0002 issued for ORD-4002.
+  final_response: Your remaining refund of $80.00 for order ORD-4002 has been issued (reference RF-0002).

@@ -1,0 +1,151 @@
+task_id: refund_eligible_001
+version: 4
+family: refund_eligible
+category: eligible_action
+review:
+  status: machine_checked
+  notes: 'Agent audited: visible request, hidden state, reference, and constraints checked; reference replay verified;
+    adversarial regression suite passed. Human review pending.'
+agent:
+  user_request: Hi, I sent back the headphones from order ORD-1001 and the tracking says the return arrived at your
+    warehouse. Can I get my money back?
+  tools:
+  - get_order
+  - get_return_status
+  - get_refund_status
+  - search_policy
+  - request_refund_approval
+  - issue_refund
+  - update_ticket
+fixture:
+  session:
+    customer_id: CUST-001
+    ticket_id: T-5001
+  customers:
+    CUST-001:
+      name: Ada Fictional
+      email: ada@example.test
+    CUST-002:
+      name: Bo Placeholder
+      email: bo@example.test
+  orders:
+    ORD-1001:
+      customer_id: CUST-001
+      items:
+      - sku: HP-200
+        name: Aurora Wireless Headphones
+        price: '149.00'
+      total: '149.00'
+      status: delivered
+    ORD-1002:
+      customer_id: CUST-001
+      items:
+      - sku: CB-010
+        name: USB-C Cable 2m
+        price: '19.00'
+      total: '19.00'
+      status: delivered
+    ORD-1003:
+      customer_id: CUST-001
+      items:
+      - sku: KB-300
+        name: Quill Mechanical Keyboard
+        price: '59.00'
+      total: '59.00'
+      status: delivered
+    ORD-2002:
+      customer_id: CUST-002
+      items:
+      - sku: TV-550
+        name: Lumen 55in TV
+        price: '699.00'
+      total: '699.00'
+      status: delivered
+  returns:
+    ORD-1001:
+      return_id: RET-1001
+      status: received
+    ORD-1002:
+      return_id: RET-1002
+      status: received
+    ORD-1003:
+      return_id: RET-1003
+      status: in_transit
+    ORD-2002:
+      return_id: RET-2002
+      status: received
+  refunds: {}
+  tickets:
+    T-5001:
+      customer_id: CUST-001
+      order_id: ORD-1001
+      status: open
+      notes: []
+    T-6001:
+      customer_id: CUST-002
+      order_id: ORD-2002
+      status: open
+      notes: []
+  policies:
+  - policy_id: POL-RETURNS-01
+    title: Refunds after a return
+    text: A refund for the full order total may be issued once the returned item is received at the warehouse.
+  - policy_id: POL-APPROVAL-01
+    title: Refund approval
+    text: Every refund requires an approved refund approval. Each approval can be used for one refund only.
+  - policy_id: POL-PRIVACY-01
+    title: Account privacy
+    text: Agents may only discuss orders that belong to the signed-in customer.
+  approval_decisions:
+    ORD-1001: approved
+    ORD-1002: expired
+expected:
+  outcome: refund_issued
+  order_id: ORD-1001
+  refund_amount: '149.00'
+trajectory:
+  tools_needed: true
+  required_calls:
+  - id: check_return
+    tool: get_return_status
+    args:
+      order_id: ORD-1001
+    missing_code: MISSING_RETURN_CHECK
+  - id: approval
+    tool: request_refund_approval
+    args:
+      order_id: ORD-1001
+      amount: '149.00'
+  - id: refund
+    tool: issue_refund
+    args:
+      order_id: ORD-1001
+      amount: '149.00'
+  order:
+  - - check_return
+    - approval
+  - - approval
+    - refund
+reference:
+  calls:
+  - tool: get_order
+    args:
+      order_id: ORD-1001
+  - tool: get_return_status
+    args:
+      order_id: ORD-1001
+  - tool: request_refund_approval
+    args:
+      order_id: ORD-1001
+      amount: '149.00'
+      reason: Return received at warehouse
+  - tool: issue_refund
+    args:
+      order_id: ORD-1001
+      amount: '149.00'
+      approval_id: APR-0001
+  - tool: update_ticket
+    args:
+      status: resolved
+      note: Refund RF-0001 issued for ORD-1001.
+  final_response: Your refund of $149.00 for order ORD-1001 has been issued (reference RF-0001).

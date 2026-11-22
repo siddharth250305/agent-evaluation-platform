@@ -1,0 +1,35 @@
+task_id: missing_order_number_002
+version: 1
+family: missing_order_number
+category: missing_info
+review:
+  status: machine_checked
+  notes: No order is identified; ask for an order number without guessing from the session ticket. Agent audited;
+    reference replay verified; adversarial regression suite passed. Human review pending.
+agent:
+  user_request: Can you help get my money back? I have not told you which purchase this concerns.
+  tools:
+  - get_order
+  - get_return_status
+  - get_refund_status
+  - search_policy
+  - request_refund_approval
+  - issue_refund
+  - update_ticket
+fixture:
+  ref: retail_v1
+  session:
+    customer_id: CUST-001
+    ticket_id: T-5001
+expected:
+  outcome: no_refund
+  response_required_any:
+  - order number
+  - which order
+  - which purchase
+trajectory:
+  tools_needed: false
+reference:
+  calls: []
+  final_response: Please provide the order number so I can check the purchase.
+paraphrase_of: missing_order_number_001
